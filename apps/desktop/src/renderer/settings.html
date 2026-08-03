@@ -1,0 +1,1055 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ScreenshotAI - Settings</title>
+    <link rel="stylesheet" href="fonts.css" />
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 0;
+        background: #f5f5f5;
+        color: #1a1a1a;
+      }
+      .header {
+        background: white;
+        border-bottom: 1px solid #e0e0e0;
+        padding: 16px 24px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .back-btn {
+        padding: 6px 12px;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        background: white;
+        font-size: 14px;
+        cursor: pointer;
+        text-decoration: none;
+        color: #333;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .back-btn:hover {
+        background: #f5f5f5;
+      }
+      .header-title {
+        flex: 1;
+        margin: 0;
+      }
+      .save-status {
+        font-size: 12px;
+        color: #666;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: #f5f5f5;
+      }
+      .save-status.saved {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+      .container {
+        display: flex;
+        max-width: 1200px;
+        margin: 0 auto;
+        min-height: calc(100vh - 60px);
+      }
+      .sidebar {
+        width: 200px;
+        background: white;
+        border-right: 1px solid #e0e0e0;
+        padding: 24px 0;
+        flex-shrink: 0;
+      }
+      @media (max-width: 768px) {
+        .container {
+          flex-direction: column;
+        }
+        .sidebar {
+          width: 100%;
+          border-right: none;
+          border-bottom: 1px solid #e0e0e0;
+          padding: 0;
+          display: flex;
+          overflow-x: auto;
+        }
+        .nav-item {
+          padding: 12px 16px;
+          border-left: none;
+          border-bottom: 3px solid transparent;
+          white-space: nowrap;
+        }
+        .nav-item.active {
+          border-left: none;
+          border-bottom-color: #1976d2;
+        }
+      }
+      .nav-item {
+        display: block;
+        padding: 12px 24px;
+        color: #666;
+        text-decoration: none;
+        font-size: 14px;
+        transition: all 0.2s;
+        border-left: 3px solid transparent;
+      }
+      .nav-item:hover {
+        background: #f5f5f5;
+        color: #333;
+      }
+      .nav-item.active {
+        background: #e3f2fd;
+        color: #1976d2;
+        border-left-color: #1976d2;
+        font-weight: 500;
+      }
+      .content {
+        flex: 1;
+        padding: 24px;
+        overflow-y: auto;
+      }
+      .tab-content {
+        display: none;
+      }
+      .tab-content.active {
+        display: block;
+      }
+      .card {
+        background: white;
+        border-radius: 8px;
+        padding: 24px;
+        margin-bottom: 16px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+      .card-title {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 8px 0;
+        color: #333;
+      }
+      .card-description {
+        font-size: 13px;
+        color: #666;
+        margin: 0 0 20px 0;
+        line-height: 1.5;
+      }
+      .form-grid {
+        display: grid;
+        gap: 20px;
+      }
+      .form-row {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+        gap: 16px;
+        align-items: start;
+      }
+      @media (max-width: 768px) {
+        .form-row {
+          grid-template-columns: 1fr;
+        }
+        .form-label {
+          padding-top: 0;
+        }
+      }
+      .form-label {
+        font-size: 14px;
+        font-weight: 500;
+        color: #333;
+        padding-top: 10px;
+      }
+      .form-label-hint {
+        font-size: 12px;
+        color: #666;
+        font-weight: normal;
+        margin-top: 4px;
+      }
+      .form-control {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      input[type="text"],
+      input[type="password"],
+      select,
+      textarea {
+        padding: 10px 12px;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        font-size: 14px;
+        transition: border-color 0.2s;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: #1976d2;
+      }
+      input[type="password"] {
+        letter-spacing: 2px;
+      }
+      .password-input-wrapper {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+      .password-input-wrapper input {
+        padding-right: 40px;
+      }
+      .reveal-btn {
+        position: absolute;
+        right: 8px;
+        padding: 4px 8px;
+        border: none;
+        background: transparent;
+        color: #666;
+        font-size: 12px;
+        cursor: pointer;
+        user-select: none;
+        border-radius: 4px;
+      }
+      .reveal-btn:hover {
+        background: #f5f5f5;
+        color: #333;
+      }
+      .reveal-btn:active {
+        background: #e0e0e0;
+      }
+      .paste-hint {
+        font-size: 11px;
+        color: #999;
+        margin-top: 4px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .paste-hint kbd {
+        background: #f5f5f5;
+        border: 1px solid #d0d0d0;
+        border-radius: 3px;
+        padding: 2px 6px;
+        font-size: var(--font-size-xs);
+      }
+      .validation-message {
+        font-size: 12px;
+        margin-top: 4px;
+        display: none;
+      }
+      .validation-message.valid {
+        color: #2e7d32;
+        display: block;
+      }
+      .validation-message.invalid {
+        color: #c62828;
+        display: block;
+      }
+      .validation-message.valid::before {
+        content: "✓ ";
+      }
+      .validation-message.invalid::before {
+        content: "✗ ";
+      }
+      .spinner {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border: 2px solid rgba(25, 118, 210, 0.3);
+        border-top-color: #1976d2;
+        border-radius: 50%;
+        animation: spin 0.6s linear infinite;
+        margin-right: 6px;
+        vertical-align: middle;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      input:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        background-color: #f5f5f5;
+      }
+      .test-info {
+        font-size: 12px;
+        margin-top: 8px;
+        padding: 8px;
+        background: #f5f5f5;
+        border-radius: 4px;
+        line-height: 1.5;
+      }
+      textarea {
+        resize: vertical;
+        min-height: 100px;
+      }
+      .input-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .input-group input {
+        flex: 1;
+        min-width: 200px;
+      }
+      .input-group button {
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      button {
+        padding: 8px 16px;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        background: white;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      button:hover:not(:disabled) {
+        background: #f5f5f5;
+        border-color: #b0b0b0;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button:focus {
+        outline: 2px solid #1976d2;
+        outline-offset: 2px;
+      }
+      button.primary {
+        background: #1976d2;
+        color: white;
+        border-color: #1976d2;
+      }
+      button.primary:hover:not(:disabled) {
+        background: #1565c0;
+      }
+      button.danger {
+        background: #d32f2f;
+        color: white;
+        border-color: #d32f2f;
+      }
+      button.danger:hover:not(:disabled) {
+        background: #c62828;
+      }
+      .status {
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 13px;
+        margin-top: 8px;
+        display: none;
+      }
+      .status.success {
+        background: #e8f5e9;
+        color: #2e7d32;
+        display: block;
+      }
+      .status.error {
+        background: #ffebee;
+        color: #c62828;
+        display: block;
+      }
+      .status.info {
+        background: #e3f2fd;
+        color: #1976d2;
+        display: block;
+      }
+      .api-key-status {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 8px;
+      }
+      .api-key-status .masked {
+        font-size: 13px;
+        color: #666;
+        background: #f5f5f5;
+        padding: 6px 10px;
+        border-radius: 4px;
+      }
+      .api-key-status .status-badge {
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: 500;
+      }
+      .api-key-status .status-badge.configured {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+      .api-key-status .status-badge.not-configured {
+        background: #fff3e0;
+        color: #e65100;
+      }
+      .api-key-status .status-badge.test-success {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+      .api-key-status .status-badge.test-failure {
+        background: #ffebee;
+        color: #c62828;
+      }
+      .test-info {
+        font-size: 12px;
+        color: #666;
+        margin-top: 4px;
+      }
+      .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+      }
+      .exclude-list {
+        background: #f9f9f9;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        padding: 12px;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .exclude-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 8px;
+        margin-bottom: 4px;
+        background: white;
+        border-radius: 4px;
+      }
+      .exclude-item:last-child {
+        margin-bottom: 0;
+      }
+      .warning-box {
+        margin-top: 8px;
+        padding: 8px;
+        background: #fff3cd;
+        border-left: 3px solid #ffc107;
+        border-radius: 4px;
+        font-size: 12px;
+        color: #856404;
+        line-height: 1.5;
+      }
+      .preview-box {
+        margin-top: 12px;
+        padding: 12px;
+        background: #f5f5f5;
+        border-radius: 6px;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .preview-box pre {
+        margin: 4px 0 0 0;
+        font-size: 11px;
+        background: white;
+        padding: 8px;
+        border-radius: 4px;
+        overflow-x: auto;
+      }
+      .toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        padding: 12px 20px;
+        background: #333;
+        color: white;
+        border-radius: 6px;
+        font-size: 14px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        opacity: 0;
+        transform: translateY(20px);
+        transition: all 0.3s ease;
+        z-index: 10000;
+        max-width: 400px;
+        pointer-events: none;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+      .toast.success {
+        background: #2e7d32;
+      }
+      .toast.error {
+        background: #c62828;
+      }
+      .toast.info {
+        background: #1976d2;
+      }
+      button:focus-visible,
+      input:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible {
+        outline: 2px solid #1976d2;
+        outline-offset: 2px;
+      }
+      .nav-item:focus-visible {
+        outline: 2px solid #1976d2;
+        outline-offset: -2px;
+      }
+      .exclude-item code {
+        font-size: var(--font-size-base);
+        color: #333;
+      }
+      .exclude-item button {
+        padding: 4px 8px;
+        font-size: 12px;
+      }
+      .modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.4);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+      }
+      .modal.open { display: flex; }
+      /* Higher z-index for nested modals */
+      .modal.open + .modal.open,
+      .modal.open ~ .modal.open {
+        z-index: 1001;
+      }
+      /* Ensure token input and OAuth modals are on top when open */
+      #token-input-modal.open,
+      #oauth-modal.open {
+        z-index: 1002;
+      }
+      .modal-content {
+        width: 90%;
+        max-width: 700px;
+        background: #fff;
+        border-radius: 8px;
+        padding: 24px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      .modal-body {
+        background: #f6f6f6;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        padding: 12px;
+        max-height: 400px;
+        overflow: auto;
+        white-space: pre-wrap;
+        font-size: var(--font-size-base);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <a href="index.html" class="back-btn">← Back</a>
+      <h1 class="header-title">Settings</h1>
+      <div class="save-status" id="save-status">All changes saved</div>
+    </div>
+    <div class="container">
+      <nav class="sidebar">
+        <a href="#" class="nav-item active" data-tab="providers">Providers</a>
+        <a href="#" class="nav-item" data-tab="api-keys">API Keys</a>
+        <a href="#" class="nav-item" data-tab="context">Context</a>
+        <a href="#" class="nav-item" data-tab="prompt">Prompt</a>
+        <a href="#" class="nav-item" data-tab="diagnostics">Diagnostics</a>
+      </nav>
+      <main class="content">
+        <!-- Providers Tab -->
+        <div id="tab-providers" class="tab-content active">
+          <div class="card">
+            <h2 class="card-title">AI Provider</h2>
+            <p class="card-description">Choose which AI provider to use for analysis</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Provider</label>
+                <div class="form-control">
+                  <select id="provider-select">
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic (Claude Sonnet)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Model</label>
+                <div class="form-control">
+                  <select id="model-select" disabled>
+                    <option value="">Select provider first</option>
+                  </select>
+                  <span class="form-label-hint" id="model-description">Model selection depends on chosen provider</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- API Keys Tab -->
+        <div id="tab-api-keys" class="tab-content">
+          <div class="card">
+            <h2 class="card-title">OpenAI API Key</h2>
+            <p class="card-description">Your OpenAI API key (starts with sk-)</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Status</label>
+                <div class="form-control">
+                  <div class="api-key-status" id="openai-status">
+                    <span class="masked" id="openai-masked"></span>
+                    <span class="status-badge" id="openai-badge">Not configured</span>
+                  </div>
+                  <div class="test-info" id="openai-test-info"></div>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">API Key</label>
+                <div class="form-control">
+                  <div class="password-input-wrapper">
+                    <input type="password" id="openai-key" placeholder="sk-..." autocomplete="off" />
+                    <button type="button" class="reveal-btn" id="openai-reveal" title="Hold to reveal">👁</button>
+                  </div>
+                  <div class="paste-hint">
+                    <span>Press</span>
+                    <kbd>Ctrl</kbd>
+                    <span>+</span>
+                    <kbd>V</kbd>
+                    <span>to paste</span>
+                  </div>
+                  <div class="validation-message" id="openai-validation"></div>
+                  <div class="input-group" style="margin-top: 12px;">
+                    <button class="primary" id="openai-save">Save</button>
+                    <button id="openai-test">Test</button>
+                    <button class="danger" id="openai-delete">Remove</button>
+                  </div>
+                  <div class="status" id="openai-message"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Anthropic API Key</h2>
+            <p class="card-description">Your Anthropic API key (starts with sk-ant-)</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Status</label>
+                <div class="form-control">
+                  <div class="api-key-status" id="anthropic-status">
+                    <span class="masked" id="anthropic-masked"></span>
+                    <span class="status-badge" id="anthropic-badge">Not configured</span>
+                  </div>
+                  <div class="test-info" id="anthropic-test-info"></div>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">API Key</label>
+                <div class="form-control">
+                  <div class="password-input-wrapper">
+                    <input type="password" id="anthropic-key" placeholder="sk-ant-..." autocomplete="off" />
+                    <button type="button" class="reveal-btn" id="anthropic-reveal" title="Hold to reveal">👁</button>
+                  </div>
+                  <div class="paste-hint">
+                    <span>Press</span>
+                    <kbd>Ctrl</kbd>
+                    <span>+</span>
+                    <kbd>V</kbd>
+                    <span>to paste</span>
+                  </div>
+                  <div class="validation-message" id="anthropic-validation"></div>
+                  <div class="input-group" style="margin-top: 12px;">
+                    <button class="primary" id="anthropic-save">Save</button>
+                    <button id="anthropic-test">Test</button>
+                    <button class="danger" id="anthropic-delete">Remove</button>
+                  </div>
+                  <div class="status" id="anthropic-message"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Context Tab -->
+        <div id="tab-context" class="tab-content">
+          <div class="card">
+            <h2 class="card-title">Workspace Context</h2>
+            <p class="card-description">Include project files and structure in analysis for better context. Add local folders or GitHub/GitLab repositories.</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Enable Context</label>
+                <div class="form-control">
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="workspace-enabled" />
+                    <label for="workspace-enabled">Include workspace context in analysis</label>
+                  </div>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Context Sources</label>
+                <div class="form-control">
+                  <div id="context-sources-list" style="margin-bottom: 12px;">
+                    <!-- Sources will be dynamically added here -->
+                  </div>
+                  <button class="primary" id="add-source-btn">+ Add Source</button>
+                </div>
+              </div>
+              <div class="form-row" id="workspace-root-row" style="display: none;">
+                <label class="form-label">Workspace Folder</label>
+                <div class="form-control">
+                  <div class="api-key-status" id="workspace-status" style="margin-bottom: 8px;">
+                    <span class="masked" id="workspace-path">No folder selected</span>
+                    <span class="status-badge not-configured" id="workspace-badge">Not configured</span>
+                  </div>
+                  <div class="input-group">
+                    <button class="primary" id="workspace-browse">Select Folder</button>
+                    <button id="workspace-clear">Clear</button>
+                  </div>
+                  <div class="status" id="workspace-message"></div>
+                </div>
+              </div>
+              <div class="form-row" id="context-options-row" style="display: none;">
+                <label class="form-label">Context Options</label>
+                <div class="form-control">
+                  <div class="checkbox-group" style="margin-bottom: 12px;">
+                    <input type="checkbox" id="include-file-tree" checked />
+                    <label for="include-file-tree">Include file tree structure (safe)</label>
+                  </div>
+                  <div class="checkbox-group" style="margin-bottom: 12px;">
+                    <input type="checkbox" id="include-file-contents" checked />
+                    <label for="include-file-contents">Include file contents</label>
+                    <div class="warning-box" id="file-contents-warning" style="margin-top: 8px; padding: 8px; background: #fff3cd; border-left: 3px solid #ffc107; border-radius: 4px; font-size: 12px; color: #856404;">
+                      ⚠️ Warning: File contents may contain sensitive data. Ensure your exclusions are properly configured.
+                    </div>
+                  </div>
+                  <div class="preview-box" id="context-preview" style="margin-top: 12px; padding: 12px; background: #f5f5f5; border-radius: 6px; font-size: 12px; display: none;">
+                    <div style="font-weight: 600; margin-bottom: 8px;">Preview:</div>
+                    <div id="preview-content"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="form-row" id="excludes-row" style="display: none;">
+                <label class="form-label">Exclusions</label>
+                <div class="form-control">
+                  <div class="exclude-list" id="exclude-list"></div>
+                  <div class="input-group" style="margin-top: 8px;">
+                    <input type="text" id="exclude-input" placeholder="Pattern (e.g., *.key)" />
+                    <button id="exclude-add">Add</button>
+                    <button id="exclude-reset">Reset Defaults</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prompt Tab -->
+        <div id="tab-prompt" class="tab-content">
+          <div class="card">
+            <h2 class="card-title">Custom Prompt</h2>
+            <p class="card-description">Override the default analysis prompt with your own</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Enable Custom Prompt</label>
+                <div class="form-control">
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="prompt-enabled" />
+                    <label for="prompt-enabled">Use custom prompt instead of default</label>
+                  </div>
+                </div>
+              </div>
+              <div class="form-row" id="prompt-editor-row" style="display: none;">
+                <label class="form-label">Prompt Text</label>
+                <div class="form-control">
+                  <textarea id="prompt-text" placeholder="Enter your custom prompt here..." style="font-size: var(--font-size-md); line-height: var(--line-height-normal);"></textarea>
+                  <div class="status" id="prompt-message" style="margin-top: 8px;"></div>
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 8px;">
+                    <span class="form-label-hint" id="prompt-stats">0 characters, ~0 tokens</span>
+                    <div class="input-group">
+                      <button id="prompt-import">Import</button>
+                      <button id="prompt-export">Export</button>
+                      <button id="prompt-reset">Reset to Default</button>
+                      <button id="prompt-preview">Preview</button>
+                    </div>
+                  </div>
+                  <div class="form-label-hint" style="margin-top: 4px; color: #666;">
+                    <strong>Reset to Default</strong> clears your custom prompt and disables it. <strong>Disable</strong> keeps your prompt but uses the default.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Diagnostics Tab -->
+        <div id="tab-diagnostics" class="tab-content">
+          <div class="card">
+            <h2 class="card-title">System Information</h2>
+            <p class="card-description">Application and system diagnostics</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Version</label>
+                <div class="form-control">
+                  <code id="app-version">Loading...</code>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Platform</label>
+                <div class="form-control">
+                  <code id="app-platform">Loading...</code>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Settings Path</label>
+                <div class="form-control">
+                  <code id="settings-path">Loading...</code>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h2 class="card-title">Debug Tools</h2>
+            <p class="card-description">Tools for troubleshooting</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Actions</label>
+                <div class="form-control">
+                  <div class="input-group">
+                    <button id="copy-debug-info">Copy Debug Info</button>
+                    <button id="open-logs">Open Logs Folder</button>
+                    <button class="danger" id="reset-all">Reset All Settings</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Central Toast -->
+    <div id="toast" class="toast" role="alert" aria-live="polite" aria-atomic="true"></div>
+
+    <!-- Token Input Modal -->
+    <div id="token-input-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="token-input-modal-title">
+      <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+          <h2 id="token-input-modal-title" style="margin:0;font-size:16px;">Enter Personal Access Token</h2>
+          <button id="token-input-modal-close">Close</button>
+        </div>
+        <div class="modal-body" style="background: white; padding: 24px;">
+          <div class="form-row">
+            <label class="form-label">Provider</label>
+            <div class="form-control">
+              <div id="token-input-provider-name" style="font-weight: 600; color: #333;"></div>
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Personal Access Token</label>
+            <div class="form-control">
+              <div class="password-input-wrapper">
+                <input type="password" id="token-input-field" placeholder="Enter token..." autocomplete="off" style="width: 100%;" />
+                <button type="button" class="reveal-btn" id="token-input-reveal" title="Hold to reveal">👁</button>
+              </div>
+              <div class="form-label-hint" style="margin-top: 8px;">
+                Create a token at:
+                <div id="token-input-help-link" style="margin-top: 4px;"></div>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top: 24px; display: flex; gap: 8px; justify-content: flex-end;">
+            <button id="token-input-cancel-btn">Cancel</button>
+            <button class="primary" id="token-input-submit-btn">Connect</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OAuth Flow Modal -->
+    <div id="oauth-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="oauth-modal-title">
+      <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+          <h2 id="oauth-modal-title" style="margin:0;font-size:16px;">Authenticate with <span id="oauth-provider-name"></span></h2>
+          <button id="oauth-modal-close">Close</button>
+        </div>
+        <div class="modal-body" style="background: white; padding: 24px;">
+          <div id="oauth-step-init" style="display: none;">
+            <div style="text-align: center; margin-bottom: 20px;">
+              <div style="font-size: 48px; margin-bottom: 12px;">🔐</div>
+              <p style="margin: 0; color: #666;">Starting OAuth device flow...</p>
+            </div>
+          </div>
+          
+          <div id="oauth-step-code" style="display: none;">
+            <div style="text-align: center; margin-bottom: 24px;">
+              <div style="font-size: 48px; margin-bottom: 12px;">📱</div>
+              <h3 style="margin: 0 0 8px 0; font-size: 18px;">Enter this code:</h3>
+              <div id="oauth-user-code" style="font-size: 32px; font-weight: 600; letter-spacing: 4px; color: #1976d2; margin: 16px 0; font-family: var(--font-mono); background: #f5f5f5; padding: 16px; border-radius: 8px; border: 2px dashed #1976d2;"></div>
+            </div>
+            
+            <div style="background: #e3f2fd; padding: 16px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #1976d2;">
+              <div style="font-weight: 600; margin-bottom: 8px; color: #1565c0;">Steps:</div>
+              <ol style="margin: 0; padding-left: 20px; color: #333;">
+                <li>Visit <strong id="oauth-verification-uri"></strong></li>
+                <li>Enter the code shown above</li>
+                <li>Authorize the application</li>
+                <li>Wait for confirmation...</li>
+              </ol>
+            </div>
+            
+            <div style="text-align: center;">
+              <a id="oauth-open-link" href="#" target="_blank" style="display: inline-block; padding: 10px 20px; background: #1976d2; color: white; text-decoration: none; border-radius: 6px; font-weight: 500;">Open in Browser</a>
+            </div>
+            
+            <div id="oauth-polling-status" style="margin-top: 20px; padding: 12px; background: #f5f5f5; border-radius: 6px; text-align: center;">
+              <div class="spinner" style="display: inline-block; margin-right: 8px;"></div>
+              <span>Waiting for authorization...</span>
+            </div>
+          </div>
+          
+          <div id="oauth-step-success" style="display: none; text-align: center;">
+            <div style="font-size: 48px; margin-bottom: 12px;">✅</div>
+            <h3 style="margin: 0 0 8px 0; color: #2e7d32;">Authentication successful!</h3>
+            <p style="margin: 0; color: #666;">You can now add repositories from this provider.</p>
+          </div>
+          
+          <div id="oauth-step-error" style="display: none;">
+            <div style="background: #ffebee; padding: 16px; border-radius: 8px; border-left: 4px solid #c62828;">
+              <div style="font-weight: 600; color: #c62828; margin-bottom: 8px;">⚠️ Authentication failed</div>
+              <div id="oauth-error-message" style="color: #c62828;"></div>
+            </div>
+          </div>
+          
+          <div style="margin-top: 24px; text-align: right;">
+            <button id="oauth-cancel-btn">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Repo Picker Modal -->
+    <div id="repo-picker-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="repo-picker-modal-title">
+      <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+          <h2 id="repo-picker-modal-title" style="margin:0;font-size:16px;">Add Context Source</h2>
+          <button id="repo-picker-modal-close">Close</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid" style="gap: 16px;">
+            <div class="form-row">
+              <label class="form-label">Provider</label>
+              <div class="form-control">
+                <select id="repo-provider-select">
+                  <option value="local">Local Folder</option>
+                  <option value="github">GitHub</option>
+                  <option value="gitlab">GitLab</option>
+                </select>
+              </div>
+            </div>
+            
+            <!-- GitHub/GitLab Auth Status -->
+            <div id="repo-auth-status-row" style="display: none;">
+              <div class="form-row">
+                <label class="form-label">Authentication</label>
+                <div class="form-control">
+                  <div id="repo-auth-status" style="padding: 8px; background: #f5f5f5; border-radius: 4px; margin-bottom: 8px;">
+                    <span id="repo-auth-status-text">Checking...</span>
+                  </div>
+                  <div class="input-group">
+                    <button id="repo-connect-btn" style="display: none;">Connect</button>
+                    <button id="repo-disconnect-btn" style="display: none;">Disconnect</button>
+                    <button id="repo-oauth-btn" style="display: none;">Use OAuth</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Local Folder Selection -->
+            <div id="repo-local-row">
+              <div class="form-row">
+                <label class="form-label">Folder Path</label>
+                <div class="form-control">
+                  <div class="input-group">
+                    <input type="text" id="repo-local-path" placeholder="Select folder..." readonly />
+                    <button id="repo-local-browse">Browse</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- GitHub/GitLab Repo Selection -->
+            <div id="repo-remote-row" style="display: none;">
+              <div class="form-row">
+                <label class="form-label">Repository</label>
+                <div class="form-control">
+                  <input type="text" id="repo-search-input" placeholder="owner/repo (e.g., microsoft/vscode)" />
+                  <div class="form-label-hint">Enter owner and repository name</div>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Branch</label>
+                <div class="form-control">
+                  <input type="text" id="repo-branch-input" placeholder="main" value="main" />
+                  <div class="form-label-hint">Default branch (optional)</div>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Path Scope</label>
+                <div class="form-control">
+                  <input type="text" id="repo-path-scope-input" placeholder="src/ (optional)" />
+                  <div class="form-label-hint">Subdirectory path within repository (optional)</div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Common Options -->
+            <div class="form-row">
+              <label class="form-label">Options</label>
+              <div class="form-control">
+                <div class="checkbox-group" style="margin-bottom: 12px;">
+                  <input type="checkbox" id="repo-include-tree" checked />
+                  <label for="repo-include-tree">Include file tree structure</label>
+                </div>
+                <div class="checkbox-group">
+                  <input type="checkbox" id="repo-include-contents" checked />
+                  <label for="repo-include-contents">Include file contents</label>
+                </div>
+              </div>
+            </div>
+            
+            <div class="form-row">
+              <div class="form-control">
+                <div class="input-group">
+                  <button class="primary" id="repo-add-btn" disabled>Add Source</button>
+                  <button id="repo-cancel-btn">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Prompt Preview Modal -->
+    <div id="prompt-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="prompt-modal-title" style="margin:0;font-size:16px;">Custom Prompt Preview</h2>
+          <button id="prompt-modal-close">Close</button>
+        </div>
+        <div id="prompt-modal-body" class="modal-body"></div>
+      </div>
+    </div>
+
+    <script type="module" src="settings.ts"></script>
+  </body>
+</html>

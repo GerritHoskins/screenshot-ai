@@ -1,0 +1,1228 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ScreenshotAI</title>
+    <link rel="stylesheet" href="fonts.css" />
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 0;
+        background: #fafafa;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      
+      /* Header */
+      .app-header {
+        padding: 12px 16px;
+        background: white;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+      .app-header h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+        color: #1a1a1a;
+      }
+      .header-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .capture-btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 6px;
+        background: #1976d2;
+        color: white;
+        font-weight: 500;
+        font-size: 14px;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+      .capture-btn:hover:not(:disabled) {
+        background: #1565c0;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      }
+      .capture-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .capture-btn:focus {
+        outline: 2px solid #1976d2;
+        outline-offset: 2px;
+      }
+      .shortcut-hint {
+        color: #999;
+        font-size: 11px;
+        margin-left: 8px;
+      }
+      
+      /* StatusBar - Compact row */
+      #status-bar {
+        padding: 8px 16px;
+        background: white;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
+        font-size: 13px;
+        position: relative;
+        z-index: 10000;
+        overflow: visible;
+      }
+      .status-icon {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .status-icon.idle { background: #ccc; }
+      .status-icon.capturing,
+      .status-icon.analyzing {
+        border: 2px solid #1976d2;
+        border-top-color: transparent;
+        animation: spin 0.8s linear infinite;
+      }
+      .status-icon.success { background: #4caf50; }
+      .status-icon.error { background: #f44336; }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .status-text {
+        flex: 1;
+        color: #666;
+      }
+      .confidence-badge {
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        background: #e3f2fd;
+        color: #1976d2;
+        cursor: help;
+      }
+      .confidence-badge.low {
+        background: #ffebee;
+        color: #c62828;
+      }
+      .confidence-badge.medium {
+        background: #fff3e0;
+        color: #e65100;
+      }
+      .confidence-badge.high {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+      .status-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-left: auto;
+        position: relative;
+        overflow: visible;
+      }
+      .status-btn {
+        padding: 4px 12px;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: white;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .status-btn:hover:not(:disabled) {
+        background: #f5f5f5;
+        border-color: #b0b0b0;
+      }
+      .status-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .status-btn.primary {
+        background: #1976d2;
+        color: white;
+        border-color: #1976d2;
+      }
+      .status-btn.primary:hover:not(:disabled) {
+        background: #1565c0;
+      }
+      .export-menu {
+        position: relative;
+      }
+      .export-menu-dropdown {
+        position: absolute;
+        top: 100%;
+        right: 0;
+        margin-top: 4px;
+        background: white;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        min-width: 200px;
+        z-index: 1000;
+        display: none;
+      }
+      .export-menu-dropdown.show {
+        display: block;
+      }
+      .export-menu-item {
+        padding: 10px 16px;
+        border: none;
+        background: transparent;
+        width: 100%;
+        text-align: left;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.2s;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .export-menu-item:last-child {
+        border-bottom: none;
+      }
+      .export-menu-item:hover {
+        background: #f5f5f5;
+      }
+      .export-menu-item:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .feedback-buttons {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        position: relative;
+        overflow: visible;
+      }
+      .feedback-btn {
+        padding: 4px 8px;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: white;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.2s;
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .feedback-btn:hover:not(:disabled) {
+        background: #f5f5f5;
+      }
+      .feedback-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .feedback-btn.active.positive {
+        background: #e8f5e9;
+        border-color: #4caf50;
+      }
+      .feedback-btn.active.negative {
+        background: #ffebee;
+        border-color: #f44336;
+      }
+      .feedback-popover {
+        position: fixed;
+        background: white;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        min-width: 280px;
+        z-index: 10001;
+        display: none;
+        padding: 16px;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      .feedback-popover.show {
+        display: block;
+      }
+      .feedback-popover-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 12px;
+      }
+      .feedback-option {
+        padding: 8px 12px;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        background: white;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.2s;
+        margin-bottom: 8px;
+        text-align: left;
+        width: 100%;
+      }
+      .feedback-option:hover {
+        background: #f5f5f5;
+        border-color: #b0b0b0;
+      }
+      .feedback-option.active {
+        background: #e3f2fd;
+        border-color: #1976d2;
+        color: #1976d2;
+      }
+      .feedback-option:last-child {
+        margin-bottom: 0;
+      }
+      .feedback-textarea {
+        width: 100%;
+        min-height: 60px;
+        padding: 8px;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        font-size: 13px;
+        font-family: inherit;
+        resize: vertical;
+        margin-top: 8px;
+      }
+      .feedback-submit {
+        margin-top: 12px;
+        padding: 6px 16px;
+        border: none;
+        border-radius: 4px;
+        background: #1976d2;
+        color: white;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .feedback-submit:hover {
+        background: #1565c0;
+      }
+      .feedback-submit:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      
+      /* Main content area - two pane layout */
+      .main-content {
+        flex: 1;
+        display: flex;
+        overflow: hidden;
+        min-height: 0;
+      }
+      
+      /* Left pane - Screenshot panel */
+      .screenshot-panel {
+        width: 320px;
+        flex-shrink: 0;
+        background: white;
+        border-right: 1px solid #e0e0e0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .screenshot-preview {
+        padding: 16px;
+        border-bottom: 1px solid #e0e0e0;
+        flex-shrink: 0;
+      }
+      .screenshot-preview.empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 200px;
+        color: #999;
+        text-align: center;
+      }
+      .screenshot-preview img {
+        max-width: 100%;
+        height: auto;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: transform 0.2s;
+      }
+      .screenshot-preview img:hover {
+        transform: scale(1.02);
+      }
+      .screenshot-metadata {
+        padding: 16px;
+        font-size: 12px;
+        color: #666;
+        overflow-y: auto;
+        flex: 1;
+      }
+      .metadata-item {
+        margin-bottom: 8px;
+      }
+      .metadata-item strong {
+        color: #333;
+        display: block;
+        margin-bottom: 2px;
+      }
+      .metadata-item span {
+        color: #666;
+      }
+      
+      /* Right pane - Findings */
+      .findings-panel {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background: #fafafa;
+      }
+      
+      /* Tabs */
+      .findings-tabs {
+        display: flex;
+        gap: 0;
+        background: white;
+        border-bottom: 1px solid #e0e0e0;
+        padding: 0 16px;
+        flex-shrink: 0;
+        overflow-x: auto;
+      }
+      .findings-tab {
+        padding: 12px 16px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: #666;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.2s;
+        white-space: nowrap;
+        position: relative;
+      }
+      .findings-tab:hover {
+        color: #333;
+        background: #f5f5f5;
+      }
+      .findings-tab.active {
+        color: #1976d2;
+        border-bottom-color: #1976d2;
+        font-weight: 600;
+      }
+      .findings-tab:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .findings-tab:focus {
+        outline: 2px solid #1976d2;
+        outline-offset: -2px;
+      }
+      .tab-badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        background: #e0e0e0;
+        color: #666;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .findings-tab.active .tab-badge {
+        background: #1976d2;
+        color: white;
+      }
+      
+      /* Tab content */
+      .tab-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        min-height: 0;
+        position: relative;
+      }
+      .tab-content[hidden] {
+        display: none;
+      }
+      .tab-content-scrollable {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      
+      /* Empty state */
+      .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        text-align: center;
+        color: #666;
+        padding: 48px 24px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .empty-state-icon {
+        font-size: 64px;
+        margin-bottom: 16px;
+        opacity: 0.5;
+      }
+      .empty-state-title {
+        font-size: 18px;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 8px;
+      }
+      .empty-state-text {
+        font-size: 14px;
+        line-height: 1.6;
+        max-width: 400px;
+        color: #666;
+      }
+      .empty-state-text strong {
+        color: #333;
+      }
+      
+      /* Issues toolbar */
+      .issues-toolbar {
+        background: white;
+        border-bottom: 1px solid #e0e0e0;
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        flex-shrink: 0;
+      }
+      .issues-header {
+        font-size: 14px;
+        font-weight: 600;
+        color: #333;
+        margin-right: auto;
+      }
+      .filter-chips {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .filter-chip {
+        padding: 4px 12px;
+        border: 1px solid #d0d0d0;
+        border-radius: 16px;
+        background: white;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .filter-chip:hover {
+        background: #f5f5f5;
+        border-color: #b0b0b0;
+      }
+      .filter-chip.active {
+        background: #1976d2;
+        color: white;
+        border-color: #1976d2;
+      }
+      .sort-select {
+        padding: 4px 8px;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: white;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .expand-toggle {
+        padding: 4px 12px;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: white;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .expand-toggle:hover {
+        background: #f5f5f5;
+      }
+      
+      /* Issue cards - headline-first design */
+      .issue-card {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 12px;
+        transition: all 0.2s;
+      }
+      .issue-card:hover {
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      }
+      .issue-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+      }
+      .issue-type-badge {
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        background: #e0e0e0;
+        color: #666;
+      }
+      .issue-severity-badge {
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .issue-severity-badge.high {
+        background: #ffebee;
+        color: #c62828;
+        border: 1px solid #c62828;
+      }
+      .issue-severity-badge.medium {
+        background: #fff3e0;
+        color: #e65100;
+        border: 1px solid #e65100;
+      }
+      .issue-severity-badge.low {
+        background: #f5f5f5;
+        color: #666;
+        border: 1px solid #999;
+      }
+      .issue-slide {
+        color: #666;
+        font-size: 12px;
+        margin-left: auto;
+      }
+      .issue-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #1a1a1a;
+        margin-bottom: 8px;
+        line-height: 1.4;
+      }
+      .issue-statement {
+        color: #444;
+        line-height: 1.6;
+        margin-bottom: 12px;
+      }
+      .issue-collapsible {
+        margin-top: 12px;
+        border-top: 1px solid #e8e8e8;
+        padding-top: 12px;
+      }
+      .issue-collapsible-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        user-select: none;
+        font-size: 13px;
+        font-weight: 600;
+        color: #666;
+        padding: 4px 0;
+      }
+      .issue-collapsible-header:hover {
+        color: #333;
+      }
+      .issue-collapsible-icon {
+        transition: transform 0.2s;
+        font-size: 12px;
+      }
+      .issue-collapsible.expanded .issue-collapsible-icon {
+        transform: rotate(90deg);
+      }
+      .issue-collapsible-content {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease-out;
+        padding-top: 0;
+      }
+      .issue-collapsible.expanded .issue-collapsible-content {
+        max-height: 1000px;
+        padding-top: 12px;
+      }
+      .issue-evidence,
+      .issue-suggestion {
+        background: #f8f9fa;
+        padding: 12px;
+        border-radius: 6px;
+        margin-top: 8px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #444;
+      }
+      .issue-suggestion {
+        background: #e8f5e9;
+        border-left: 3px solid #4caf50;
+      }
+      .issue-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid #e8e8e8;
+      }
+      .issue-action-btn {
+        padding: 4px 10px;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: white;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .issue-action-btn:hover {
+        background: #f5f5f5;
+        border-color: #b0b0b0;
+      }
+      .issue-action-btn.copy {
+        margin-left: auto;
+      }
+      
+      /* Legacy styles for existing content */
+      .section {
+        margin-bottom: 24px;
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .section:last-child {
+        margin-bottom: 0;
+      }
+      .section h3 {
+        margin: 0 0 12px 0;
+        font-size: 16px;
+        color: #333;
+        font-weight: 600;
+      }
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .section-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .section-header h3 {
+        margin: 0;
+      }
+      .copy-section {
+        padding: 4px 10px;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        background: white;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+        white-space: nowrap;
+      }
+      .copy-section:hover {
+        background: #f5f5f5;
+        border-color: #b0b0b0;
+      }
+      .section p {
+        margin: 0;
+        line-height: 1.6;
+        color: #444;
+      }
+      .summary-section {
+        background: white;
+      }
+      .summary-content {
+        color: #333;
+      }
+      .summary-paragraph {
+        margin: 0 0 16px 0 !important;
+        line-height: 1.7 !important;
+        color: #333 !important;
+        font-size: 14px;
+      }
+      .summary-paragraph:last-child {
+        margin-bottom: 0 !important;
+      }
+      .summary-list {
+        margin: 0;
+        padding-left: 24px;
+        color: #333;
+      }
+      .summary-list li {
+        margin-bottom: 12px;
+        line-height: 1.7;
+        font-size: 14px;
+      }
+      .summary-list li:last-child {
+        margin-bottom: 0;
+      }
+
+      /* Answer highlight - prominent answer display */
+      .answer-highlight {
+        background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+        border: 2px solid #4caf50;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 24px;
+        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.2);
+      }
+      .answer-highlight-label {
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #2e7d32;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .answer-checkmark {
+        background: #4caf50;
+        color: white;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: bold;
+      }
+      .answer-highlight-response {
+        font-size: 18px;
+        font-weight: 600;
+        color: #1b5e20;
+        line-height: 1.6;
+        margin-bottom: 12px;
+      }
+      .answer-highlight-response strong {
+        background: rgba(255,255,255,0.7);
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      .answer-highlight-explanation {
+        font-size: 14px;
+        color: #2e7d32;
+        line-height: 1.6;
+        padding: 12px;
+        background: rgba(255,255,255,0.5);
+        border-radius: 8px;
+        margin-bottom: 12px;
+      }
+      .answer-highlight-question {
+        font-size: 13px;
+        color: #666;
+        padding-top: 12px;
+        border-top: 1px solid rgba(76, 175, 80, 0.3);
+      }
+      .answer-highlight-question strong {
+        color: #444;
+      }
+
+      /* SDXL Tags styles */
+      .sdxl-section {
+        background: white;
+      }
+      .sdxl-tags-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .sdxl-tag {
+        display: inline-block;
+        padding: 6px 12px;
+        background: #e3f2fd;
+        color: #1565c0;
+        border-radius: 16px;
+        font-size: 13px;
+        font-family: 'Consolas', 'Monaco', monospace;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: 1px solid #bbdefb;
+      }
+      .sdxl-tag:hover {
+        background: #bbdefb;
+        transform: translateY(-1px);
+      }
+      .sdxl-tag.primary {
+        background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+        color: #2e7d32;
+        border-color: #a5d6a7;
+        font-weight: 600;
+      }
+      .sdxl-tag.primary:hover {
+        background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%);
+      }
+      .sdxl-tag.negative {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+      }
+      .sdxl-tag.negative:hover {
+        background: #ffcdd2;
+      }
+      .sdxl-booru-format {
+        background: #f5f5f5;
+        padding: 16px;
+        border-radius: 8px;
+        font-family: 'Consolas', 'Monaco', monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #333;
+        word-break: break-word;
+        border: 1px solid #e0e0e0;
+      }
+      .sdxl-caption {
+        font-size: 16px;
+        line-height: 1.7;
+        color: #333;
+        padding: 16px;
+        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+        border-radius: 8px;
+        border-left: 4px solid #1976d2;
+      }
+      .sdxl-natural-language {
+        font-size: 14px;
+        line-height: 1.7;
+        color: #444;
+        padding: 16px;
+        background: #fafafa;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+      }
+
+      /* Toast */
+      .toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        padding: 12px 20px;
+        background: #333;
+        color: white;
+        border-radius: 6px;
+        font-size: 14px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        opacity: 0;
+        transform: translateY(20px);
+        transition: all 0.3s;
+        z-index: 10000;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .toast.success {
+        background: #2e7d32;
+      }
+      .toast.error {
+        background: #c62828;
+      }
+      
+      /* Responsive - collapse left pane on small screens */
+      @media (max-width: 768px) {
+        .main-content {
+          flex-direction: column;
+        }
+        .screenshot-panel {
+          width: 100%;
+          max-height: 300px;
+          border-right: none;
+          border-bottom: 1px solid #e0e0e0;
+        }
+      }
+      
+      /* Screenshot Viewer Modal */
+      .screenshot-viewer-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .screenshot-viewer-modal[hidden] {
+        display: none;
+      }
+      .screenshot-viewer-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.9);
+        backdrop-filter: blur(4px);
+      }
+      .screenshot-viewer-container {
+        position: relative;
+        z-index: 1;
+        width: 95vw;
+        height: 95vh;
+        max-width: 1400px;
+        max-height: 900px;
+        background: #1a1a1a;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      }
+      .screenshot-viewer-header {
+        padding: 16px 20px;
+        background: #2a2a2a;
+        border-bottom: 1px solid #404040;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-radius: 8px 8px 0 0;
+      }
+      .screenshot-viewer-header h2 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        color: white;
+      }
+      .viewer-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .viewer-btn {
+        padding: 6px 12px;
+        border: 1px solid #404040;
+        border-radius: 4px;
+        background: #333;
+        color: white;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.2s;
+        min-width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .viewer-btn:hover {
+        background: #404040;
+        border-color: #555;
+      }
+      .viewer-btn:focus {
+        outline: 2px solid #1976d2;
+        outline-offset: 2px;
+      }
+      .viewer-close {
+        font-size: 24px;
+        line-height: 1;
+        padding: 0;
+      }
+      .viewer-zoom-level {
+        color: white;
+        font-size: 13px;
+        font-weight: 600;
+        min-width: 50px;
+        text-align: center;
+      }
+      .screenshot-viewer-content {
+        flex: 1;
+        overflow: hidden;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: grab;
+      }
+      .screenshot-viewer-content.dragging {
+        cursor: grabbing;
+      }
+      .screenshot-viewer-content img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        user-select: none;
+        pointer-events: none;
+      }
+      .viewer-regions-canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      
+      /* Utility classes */
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Header -->
+    <div class="app-header">
+      <h1>ScreenshotAI</h1>
+      <div class="header-actions">
+        <button id="capture-btn" class="capture-btn" aria-label="Capture screenshot" title="Capture screenshot (C)">
+          📷 Capture
+        </button>
+        <span class="shortcut-hint">Ctrl/Cmd+Shift+S</span>
+        <a href="settings.html" style="margin-left: 8px; padding: 8px 16px; border: 1px solid #d0d0d0; border-radius: 6px; background: white; text-decoration: none; color: #333; font-size: 14px;">Settings</a>
+      </div>
+    </div>
+    
+    <!-- StatusBar -->
+    <div id="status-bar" role="status" aria-live="polite">
+      <div class="status-icon idle" id="status-icon"></div>
+      <span class="status-text" id="status-text">Ready</span>
+      <div class="confidence-badge hidden" id="confidence-badge"></div>
+      <div class="status-actions">
+        <button id="run-again-btn" class="status-btn primary" disabled title="Run again (R)">Run again</button>
+        <div class="export-menu">
+          <button id="export-btn" class="status-btn" disabled title="Export (E)">Export ▼</button>
+          <div class="export-menu-dropdown" id="export-menu-dropdown">
+            <button class="export-menu-item" data-export="report-markdown">Copy report (Markdown)</button>
+            <button class="export-menu-item" data-export="summary">Copy summary</button>
+            <button class="export-menu-item" data-export="issues">Copy issues</button>
+            <button class="export-menu-item" data-export="json">Copy JSON</button>
+            <button class="export-menu-item" data-export="export-json">Export JSON file</button>
+            <button class="export-menu-item" data-export="export-markdown">Export Markdown file</button>
+          </div>
+        </div>
+        <div class="feedback-buttons hidden" id="feedback-buttons" style="position: relative;">
+          <button id="feedback-positive" class="feedback-btn" disabled aria-label="This analysis was helpful" title="This analysis was helpful">👍</button>
+          <button id="feedback-negative" class="feedback-btn" disabled aria-label="This analysis needs improvement" title="This analysis needs improvement">👎</button>
+          <div class="feedback-popover" id="feedback-popover">
+            <div class="feedback-popover-title">What went wrong?</div>
+            <button class="feedback-option" data-feedback-reason="too-verbose">Too verbose</button>
+            <button class="feedback-option" data-feedback-reason="incorrect">Incorrect</button>
+            <button class="feedback-option" data-feedback-reason="missing-context">Missing context</button>
+            <button class="feedback-option" data-feedback-reason="wrong-format">Wrong format</button>
+            <textarea class="feedback-textarea" id="feedback-other" placeholder="Other (optional)"></textarea>
+            <button class="feedback-submit" id="feedback-submit">Submit Feedback</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Main content - two pane layout -->
+    <div class="main-content">
+      <!-- Left pane: Screenshot preview + metadata -->
+      <div class="screenshot-panel">
+        <div class="screenshot-preview empty" id="screenshot-preview">
+          <div class="empty-state-icon">📸</div>
+          <div class="empty-state-title">No screenshot</div>
+          <div class="empty-state-text">Capture a screenshot to see it here</div>
+        </div>
+        <div class="screenshot-metadata hidden" id="screenshot-metadata"></div>
+      </div>
+      
+      <!-- Right pane: Findings with tabs -->
+      <div class="findings-panel">
+        <div class="findings-tabs" role="tablist">
+          <button class="findings-tab active" data-tab="issues" role="tab" aria-selected="true" id="tab-issues">
+            Issues<span class="tab-badge" id="badge-issues">0</span>
+          </button>
+          <button class="findings-tab" data-tab="summary" role="tab" aria-selected="false" id="tab-summary">
+            Summary
+          </button>
+          <button class="findings-tab" data-tab="notes" role="tab" aria-selected="false" id="tab-notes">
+            Notes<span class="tab-badge" id="badge-notes">0</span>
+          </button>
+          <button class="findings-tab" data-tab="raw" role="tab" aria-selected="false" id="tab-raw">
+            Raw/JSON
+          </button>
+          <button class="findings-tab" data-tab="logs" role="tab" aria-selected="false" id="tab-logs">
+            Logs
+          </button>
+        </div>
+        
+        <!-- Tab contents -->
+        <div class="tab-content" id="content-issues" role="tabpanel">
+          <div class="empty-state">
+            <div class="empty-state-icon">🔍</div>
+            <div class="empty-state-title">No issues found</div>
+            <div class="empty-state-text">Issues will appear here after analysis</div>
+          </div>
+        </div>
+        
+        <div class="tab-content" id="content-summary" hidden role="tabpanel">
+          <div class="empty-state">
+            <div class="empty-state-icon">📄</div>
+            <div class="empty-state-title">No summary available</div>
+            <div class="empty-state-text">Summary will appear here after analysis</div>
+          </div>
+        </div>
+        
+        <div class="tab-content" id="content-notes" hidden role="tabpanel">
+          <div class="empty-state">
+            <div class="empty-state-icon">📝</div>
+            <div class="empty-state-title">No notes available</div>
+            <div class="empty-state-text">Notes will appear here after analysis</div>
+          </div>
+        </div>
+        
+        <div class="tab-content" id="content-raw" hidden role="tabpanel">
+          <div class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <div class="empty-state-title">No raw data available</div>
+            <div class="empty-state-text">Raw JSON will appear here after analysis</div>
+          </div>
+        </div>
+        
+        <div class="tab-content" id="content-logs" hidden role="tabpanel">
+          <div class="empty-state">
+            <div class="empty-state-icon">📜</div>
+            <div class="empty-state-title">No logs available</div>
+            <div class="empty-state-text">Logs will appear here after analysis</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div id="toast" class="toast" role="alert" aria-live="polite"></div>
+    
+    <!-- Screenshot Viewer Modal -->
+    <div id="screenshot-viewer" class="screenshot-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="viewer-title" hidden>
+      <div class="screenshot-viewer-overlay"></div>
+      <div class="screenshot-viewer-container">
+        <div class="screenshot-viewer-header">
+          <h2 id="viewer-title">Screenshot Viewer</h2>
+          <div class="viewer-controls">
+            <button class="viewer-btn" id="viewer-zoom-out" title="Zoom out (-)">−</button>
+            <span class="viewer-zoom-level" id="viewer-zoom-level">100%</span>
+            <button class="viewer-btn" id="viewer-zoom-in" title="Zoom in (+)">+</button>
+            <button class="viewer-btn" id="viewer-reset" title="Reset zoom (0)">Reset</button>
+            <button class="viewer-btn viewer-close" id="viewer-close" title="Close (Esc)">×</button>
+          </div>
+        </div>
+        <div class="screenshot-viewer-content" id="viewer-content">
+          <img id="viewer-image" alt="Screenshot" draggable="false">
+          <canvas id="viewer-regions" class="viewer-regions-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+    
+    <script type="module" src="index.ts"></script>
+  </body>
+</html>

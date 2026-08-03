@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Select Area</title>
+    <link rel="stylesheet" href="fonts.css" />
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; cursor: crosshair; }
+      #root { position: relative; width: 100%; height: 100%; }
+      #bg { position: absolute; inset: 0; background-size: 100% 100%; background-position: top left; background-repeat: no-repeat; }
+      #selection { position: absolute; border: 2px dashed #00c2ff; background: rgba(0, 194, 255, 0.2); display: none; }
+      #hint { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,0.6); color: #fff; padding: 6px 10px; font-size: var(--font-size-base); line-height: var(--line-height-tight); border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="bg"></div>
+      <div id="selection"></div>
+      <div id="hint">Drag to select. Esc to cancel.</div>
+    </div>
+    <script type="module" src="overlay.ts"></script>
+  </body>
+</html>
