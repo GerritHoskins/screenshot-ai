@@ -30,6 +30,8 @@ export interface AIError {
   message: string;
   /** Whether this error can be retried */
   retryable: boolean;
+  /** Provider retry delay in seconds, if supplied. */
+  retryAfterSeconds?: number;
   /** Additional error context */
   details?: Record<string, unknown>;
   /** Original error if available */
@@ -79,6 +81,27 @@ export interface AIResponse<T = unknown> {
 export interface ScreenshotAnalysis {
   /** Answer to any question found in the screenshot */
   answer?: string;
+  /** Optional fields supplied by structured/custom analysis prompts. */
+  summary?: string | Array<string | { text?: string; content?: string }> | Record<string, unknown>;
+  issues?: Array<{
+    severity?: string;
+    text?: string;
+    type?: string;
+    details?: string;
+    suggestion?: string;
+  }>;
+  uxCritique?: Array<string | {
+    area?: string;
+    issue?: string;
+    suggestion?: string;
+    recommendation?: string;
+    category?: string;
+    problem?: string;
+  }>;
+  tags?: Record<string, string[]>;
+  primary_tags?: string[];
+  negative_tags?: string[];
+  booru_format?: string;
   /** Extracted text content */
   text?: string;
   /** Code blocks found in the image */
@@ -174,12 +197,12 @@ export function createErrorResponse<T = never>(
 export function createAIError(
   code: AIErrorCode,
   message: string,
-  options?: { details?: Record<string, unknown>; cause?: Error }
+  options?: { details?: Record<string, unknown>; cause?: Error; retryable?: boolean }
 ): AIError {
   return {
     code,
     message,
-    retryable: RETRYABLE_ERROR_CODES.includes(code),
+    retryable: options?.retryable ?? RETRYABLE_ERROR_CODES.includes(code),
     details: options?.details,
     cause: options?.cause,
   };

@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '24'
 
 jobs:
   # ============================================================================
@@ -35,7 +35,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run ESLint
         run: npm run lint
@@ -64,6 +64,10 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
+      - name: Install Linux native prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev
+
       - name: Install dependencies
         run: npm ci
 
@@ -71,8 +75,12 @@ jobs:
         run: npm run test:unit -- --coverage
 
       - name: Run E2E tests
+        if: runner.os != 'Linux'
         run: npm run test:e2e
-        continue-on-error: true  # E2E tests may be flaky in CI
+
+      - name: Run E2E tests with a virtual display
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum npm run test:e2e
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
@@ -143,15 +151,10 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run npm audit
         run: npm audit --audit-level=high
-        continue-on-error: true
-
-      - name: Check for known vulnerabilities
-        run: npx audit-ci --high
-        continue-on-error: true
 
   # ============================================================================
   # Summary
@@ -166,7 +169,8 @@ jobs:
         run: |
           if [[ "${{ needs.lint.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.build.result }}" != "success" ]]; then
+             [[ "${{ needs.build.result }}" != "success" ]] || \
+             [[ "${{ needs.security.result }}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1
           fi

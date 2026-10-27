@@ -42,7 +42,7 @@ export async function analyzeWithAnthropic(args: {
 
     const json = await response.json();
     if (!response.ok) {
-      const message = json?.error?.message || `Anthropic error ${response.status}`;
+      const message = `Anthropic error ${response.status}`;
       throw new Error(message);
     }
 

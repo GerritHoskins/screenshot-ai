@@ -1,180 +1,66 @@
-/**
- * E2E Test Setup - Workstream H.2
- * Test harness for Electron application E2E tests.
- */
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { resolve, relative, isAbsolute, join } from 'node:path';
+import { _electron, type ElectronApplication, type Page } from 'playwright-core';
+import type { AIResponse, ScreenshotAnalysis } from '../../src/types/ai-response';
 
-import { app, BrowserWindow } from 'electron';
-import { join } from 'path';
-import { fileURLToPath } from 'url';
+const require = createRequire(import.meta.url);
+const root = resolve(import.meta.dirname, '../..');
+const profilesRoot = join(root, '.cache', 'e2e');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = join(__filename, '../..');
+export interface TestApp {
+  application: ElectronApplication;
+  page: Page;
+  profile: string;
+}
 
-/**
- * Launch Electron app for testing.
- */
-export async function launchApp(): Promise<BrowserWindow> {
-  await app.whenReady();
+export async function launchApp(): Promise<TestApp> {
+  mkdirSync(profilesRoot, { recursive: true });
+  const profile = mkdtempSync(join(profilesRoot, 'profile-'));
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.ELECTRON_RENDERER_URL;
+  env.SCREENSHOT_AI_TEST_USER_DATA = profile;
+  const application = await _electron.launch({
+    executablePath: require('electron') as string,
+    args: [join(root, 'tests/e2e/fixture.cjs')],
+    cwd: root,
+    env,
+    timeout: 20_000,
+  });
+  try {
+    const page = await application.firstWindow();
+    await page.waitForFunction(() => window.api !== undefined);
+    await page.locator('#capture-btn').waitFor();
+    return { application, page, profile };
+  } catch (error) {
+    await application.close();
+    throw error;
+  }
+}
 
-  const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    show: false, // Don't show window during tests
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: join(__dirname, '../apps/desktop/src/preload/index.js'),
+export async function cleanup(app: TestApp): Promise<void> {
+  await app.application.close();
+  const target = resolve(app.profile);
+  const withinRoot = relative(resolve(profilesRoot), target);
+  if (!withinRoot || withinRoot.startsWith('..') || isAbsolute(withinRoot)) {
+    throw new Error('Refusing to remove a profile outside the E2E workspace');
+  }
+  rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+export async function sendToRenderer(app: TestApp, channel: string, payload: unknown): Promise<void> {
+  const window = await app.application.browserWindow(app.page);
+  await window.evaluate((win, message) => win.webContents.send(message.channel, message.payload), { channel, payload });
+}
+
+export function analysisResult(answer = 'Test analysis result'): AIResponse<ScreenshotAnalysis> {
+  return {
+    success: true,
+    data: { answer, text: 'Extracted sample text', confidence: 0.95 },
+    metadata: {
+      provider: 'openai', model: 'fixture-model', promptTokens: 100,
+      completionTokens: 50, latencyMs: 150, attemptNumber: 1,
     },
-  });
-
-  // Load the main window
-  await mainWindow.loadFile(join(__dirname, '../apps/desktop/src/renderer/index.html'));
-
-  return mainWindow;
-}
-
-/**
- * Wait for window to be ready.
- */
-export async function waitForWindowReady(window: BrowserWindow, timeout = 5000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const startTime = Date.now();
-
-    const checkReady = () => {
-      if (window.webContents.isLoading()) {
-        if (Date.now() - startTime > timeout) {
-          reject(new Error('Window load timeout'));
-        } else {
-          setTimeout(checkReady, 100);
-        }
-      } else {
-        resolve();
-      }
-    };
-
-    checkReady();
-  });
-}
-
-/**
- * Execute JavaScript in renderer process.
- */
-export async function executeInRenderer<T>(
-  window: BrowserWindow,
-  script: string
-): Promise<T> {
-  return window.webContents.executeJavaScript(script) as Promise<T>;
-}
-
-/**
- * Wait for element to appear in DOM.
- */
-export async function waitForElement(
-  window: BrowserWindow,
-  selector: string,
-  timeout = 5000
-): Promise<void> {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < timeout) {
-    const exists = await executeInRenderer<boolean>(
-      window,
-      `document.querySelector('${selector}') !== null`
-    );
-
-    if (exists) {
-      return;
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-
-  throw new Error(`Element ${selector} not found within ${timeout}ms`);
-}
-
-/**
- * Get element text content.
- */
-export async function getElementText(
-  window: BrowserWindow,
-  selector: string
-): Promise<string> {
-  return executeInRenderer<string>(
-    window,
-    `document.querySelector('${selector}')?.textContent || ''`
-  );
-}
-
-/**
- * Click element.
- */
-export async function clickElement(
-  window: BrowserWindow,
-  selector: string
-): Promise<void> {
-  await executeInRenderer<void>(
-    window,
-    `document.querySelector('${selector}')?.click()`
-  );
-  // Small delay for UI updates
-  await new Promise(resolve => setTimeout(resolve, 100));
-}
-
-/**
- * Set input value.
- */
-export async function setInputValue(
-  window: BrowserWindow,
-  selector: string,
-  value: string
-): Promise<void> {
-  await executeInRenderer<void>(
-    window,
-    `(() => {
-      const el = document.querySelector('${selector}');
-      if (el) {
-        el.value = ${JSON.stringify(value)};
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    })()`
-  );
-  await new Promise(resolve => setTimeout(resolve, 100));
-}
-
-/**
- * Get element attribute.
- */
-export async function getElementAttribute(
-  window: BrowserWindow,
-  selector: string,
-  attribute: string
-): Promise<string | null> {
-  return executeInRenderer<string | null>(
-    window,
-    `document.querySelector('${selector}')?.getAttribute('${attribute}') || null`
-  );
-}
-
-/**
- * Check if element is disabled.
- */
-export async function isElementDisabled(
-  window: BrowserWindow,
-  selector: string
-): Promise<boolean> {
-  return executeInRenderer<boolean>(
-    window,
-    `document.querySelector('${selector}')?.disabled || false`
-  );
-}
-
-/**
- * Cleanup: Close all windows.
- */
-export async function cleanup(): Promise<void> {
-  const windows = BrowserWindow.getAllWindows();
-  for (const window of windows) {
-    window.close();
-  }
+  };
 }

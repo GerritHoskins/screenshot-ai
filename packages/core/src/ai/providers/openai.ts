@@ -36,7 +36,7 @@ export async function analyzeWithOpenAI(args: {
 
     const json = await response.json();
     if (!response.ok) {
-      const message = json?.error?.message || `OpenAI error ${response.status}`;
+      const message = `OpenAI error ${response.status}`;
       throw new Error(message);
     }
 

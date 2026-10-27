@@ -28,7 +28,7 @@ export const REDACTION_RULES: RedactionRule[] = [
   // API Keys
   {
     name: 'openai-key',
-    pattern: /sk-[a-zA-Z0-9]{20,}/g,
+    pattern: /sk-(?:proj-)?[a-zA-Z0-9_-]{20,}/g,
     replacement: '[OPENAI_KEY_REDACTED]',
     enabled: true,
     category: 'api-keys',
@@ -131,6 +131,20 @@ export const REDACTION_RULES: RedactionRule[] = [
     category: 'cloud',
   },
   {
+    name: 'github-fine-grained-token',
+    pattern: /github_pat_[a-zA-Z0-9_]{20,}/g,
+    replacement: '[GITHUB_TOKEN_REDACTED]',
+    enabled: true,
+    category: 'cloud',
+  },
+  {
+    name: 'gitlab-token',
+    pattern: /glpat-[a-zA-Z0-9_-]{10,}/g,
+    replacement: '[GITLAB_TOKEN_REDACTED]',
+    enabled: true,
+    category: 'cloud',
+  },
+  {
     name: 'google-api-key',
     pattern: /AIza[a-zA-Z0-9_-]{35}/g,
     replacement: '[GOOGLE_KEY_REDACTED]',
@@ -164,6 +178,23 @@ export function redactSensitiveData(
   }
 
   return redacted;
+}
+
+/** Redact sensitive fields even when their value does not match a known key format. */
+export function redactLogValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') return redactSensitiveData(value);
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (value instanceof Error) {
+    return { name: value.name, message: redactSensitiveData(value.message) };
+  }
+  if (Array.isArray(value)) return value.map(item => redactLogValue(item, seen));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    /^(?:api[-_]?key|authorization|password|passwd|pwd|token|access[-_]?token|refresh[-_]?token|device[-_]?code|user[-_]?code|prompt|content|rawContent|response|data)$/i.test(key)
+      ? '[REDACTED]' : redactLogValue(item, seen),
+  ]));
 }
 
 /**

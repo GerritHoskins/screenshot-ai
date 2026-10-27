@@ -3,22 +3,17 @@
  * Tests for provider error handling, retry logic, and timeout behavior.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
-  MockOpenAIProvider,
-  MockAnthropicProvider,
   createSuccessMock,
-  createErrorMock,
   createRetryMock,
   createDelayMock,
 } from '../mocks/providers';
 import {
   calculateBackoffDelay,
-  sleep,
   withRetry,
   withTimeout,
   mapError,
-  type RetryOptions,
   type ErrorMapping,
 } from '../../src/providers/base';
 import { createAIError, createSuccessResponse, createErrorResponse } from '../../src/types/ai-response';
@@ -242,12 +237,12 @@ describe('mapError', () => {
 
   it('handles string errors', () => {
     const mappings: ErrorMapping[] = [
-      { pattern: 'test', code: 'TEST_ERROR', retryable: true },
+      { pattern: 'test', code: 'NETWORK_ERROR', retryable: true },
     ];
 
     const result = mapError('test error message', mappings);
 
-    expect(result.code).toBe('TEST_ERROR');
+    expect(result.code).toBe('NETWORK_ERROR');
   });
 });
 

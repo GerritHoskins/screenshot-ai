@@ -4,7 +4,7 @@
  */
 
 import type { AIResponse, AIError, AIErrorCode, ResponseMetadata } from '../types/ai-response';
-import { createAIError, createErrorResponse, RETRYABLE_ERROR_CODES } from '../types/ai-response';
+import { createAIError, createErrorResponse } from '../types/ai-response';
 
 // ============================================================================
 // Provider Configuration
@@ -122,7 +122,6 @@ export async function withRetry<T>(
   const startTime = Date.now();
   
   for (let attempt = 1; attempt <= options.maxRetries + 1; attempt++) {
-    const attemptStart = Date.now();
     
     try {
       const result = await fn();
@@ -141,7 +140,7 @@ export async function withRetry<T>(
       
       // Check if error is retryable
       if (result.error && !result.error.retryable) {
-        return result;
+        return { ...result, metadata: { ...result.metadata, attemptNumber: attempt, latencyMs: Date.now() - startTime } };
       }
       
       lastError = result.error;
@@ -159,7 +158,7 @@ export async function withRetry<T>(
     }
     
     // Extract retryAfterSeconds from error if available
-    const retryAfterSeconds = (lastError as any)?.retryAfterSeconds || options.retryAfterSeconds;
+    const retryAfterSeconds = lastError?.retryAfterSeconds ?? options.retryAfterSeconds;
     
     // Calculate delay and wait
     const delay = calculateBackoffDelay(attempt, options.baseDelay, options.maxDelay, retryAfterSeconds);
@@ -172,6 +171,51 @@ export async function withRetry<T>(
     lastError ?? createAIError('UNKNOWN_ERROR', 'All retry attempts failed'),
     createMetadata(options.maxRetries + 1, Date.now() - startTime)
   );
+}
+
+/** Abort the actual request (including its response body) before a retry starts. */
+export async function withAbortTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(createAIError('TIMEOUT', 'The provider request timed out.'));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation(controller.signal), expired]);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw createAIError('TIMEOUT', 'The provider request timed out.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function isAIError(error: unknown): error is AIError {
+  return typeof error === 'object' && error !== null && 'code' in error &&
+    'message' in error && typeof error.message === 'string' &&
+    'retryable' in error && typeof error.retryable === 'boolean';
+}
+
+/** Use status metadata, never an upstream body that may echo private inputs. */
+export function providerHttpError(provider: string, status: number, retryAfter: string | null): AIError {
+  const code: AIErrorCode = status === 401 || status === 403 ? 'AUTH_ERROR'
+    : status === 429 || status === 529 ? 'RATE_LIMIT'
+    : status === 408 || status === 504 ? 'TIMEOUT'
+    : status >= 500 ? 'MODEL_ERROR' : 'INVALID_REQUEST';
+  const error = createAIError(code, `${provider} request failed (HTTP ${status}).`, {
+    retryable: status === 408 || status === 429 || status >= 500,
+  });
+  const seconds = retryAfter === null ? NaN : Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) error.retryAfterSeconds = seconds;
+  return error;
 }
 
 // ============================================================================
@@ -227,7 +271,7 @@ export function mapError(
   // Check for Retry-After header in error (from fetch responses)
   let retryAfterSeconds: number | undefined;
   if (error instanceof Error && 'retryAfterSeconds' in error) {
-    retryAfterSeconds = (error as any).retryAfterSeconds;
+    if (typeof error.retryAfterSeconds === 'number') retryAfterSeconds = error.retryAfterSeconds;
   }
   
   for (const mapping of mappings) {
@@ -239,12 +283,13 @@ export function mapError(
       const aiError = createAIError(mapping.code, message, {
         cause: error instanceof Error ? error : undefined,
         details: retryAfterSeconds ? { retryAfterSeconds } : undefined,
+        retryable: mapping.retryable,
       });
       
       // If Retry-After is present, use it for backoff calculation
       if (retryAfterSeconds && mapping.retryable) {
         // Override retryable delay with Retry-After value
-        (aiError as any).retryAfterSeconds = retryAfterSeconds;
+        aiError.retryAfterSeconds = retryAfterSeconds;
       }
       
       return aiError;

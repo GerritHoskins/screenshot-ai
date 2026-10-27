@@ -4,7 +4,7 @@
  */
 
 import { contextBridge, ipcRenderer } from "electron";
-import type { AIResponse, ScreenshotAnalysis } from "@types/ai-response";
+import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
 
 // ============================================================================
 // Type-safe API Interface

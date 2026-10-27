@@ -3,7 +3,7 @@
  * Tests for response parsing and validation.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   validateScreenshotAnalysis as validateSchema,
   validateAndNormalizeScreenshotAnalysis,
@@ -79,13 +79,13 @@ function parseResponse<T>(raw: string): ParseResult<T> {
   }
 
   // Step 1: Clean the response
-  let cleaned = cleanResponse(raw);
+  const cleaned = cleanResponse(raw);
 
   // Step 2: Try to parse as JSON
   try {
     const data = JSON.parse(cleaned) as T;
     return { success: true, data };
-  } catch (firstError) {
+  } catch {
     // Step 3: Try to extract JSON from mixed content
     const extracted = extractJson(cleaned);
     if (extracted) {

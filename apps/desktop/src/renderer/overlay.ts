@@ -1,3 +1,4 @@
+export {};
 const bg = document.getElementById("bg") as HTMLDivElement;
 const selection = document.getElementById("selection") as HTMLDivElement;
 

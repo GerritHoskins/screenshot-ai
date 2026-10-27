@@ -4,7 +4,6 @@
  */
 
 import { getLogger } from '@logging';
-import type { RepoProvider } from './repo-auth';
 
 const logger = getLogger();
 
@@ -39,22 +38,30 @@ export interface OAuthFlowResult {
 // GitHub OAuth Device Flow
 // ============================================================================
 
-const GITHUB_CLIENT_ID = 'Iv1.8a61f9b3a7aba766'; // Example - should be configurable
+function getClientId(provider: 'github' | 'gitlab'): string {
+  const id = process.env[`SCREENSHOT_AI_${provider.toUpperCase()}_CLIENT_ID`]?.trim();
+  if (!id || id === 'example' || id === 'Iv1.8a61f9b3a7aba766') {
+    throw new Error(`${provider} OAuth is not configured. Use a personal access token or configure a registered OAuth client ID.`);
+  }
+  return id;
+}
 const GITHUB_SCOPE = 'repo read:org read:user';
 
 /**
  * Start GitHub OAuth device flow.
  */
 export async function startGitHubDeviceFlow(): Promise<DeviceCodeResponse> {
+  const clientId = getClientId('github');
   try {
     const response = await fetch('https://github.com/login/device/code', {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        client_id: GITHUB_CLIENT_ID,
+        client_id: clientId,
         scope: GITHUB_SCOPE,
       }),
     });
@@ -82,6 +89,8 @@ export async function startGitHubDeviceFlow(): Promise<DeviceCodeResponse> {
  * Poll for GitHub OAuth token.
  */
 export async function pollGitHubToken(deviceCode: string, interval: number): Promise<TokenResponse> {
+  const clientId = getClientId('github');
+  interval = Math.min(60, Math.max(5, Number.isFinite(interval) ? interval : 5));
   const maxAttempts = 60; // 5 minutes max (60 * 5 seconds)
   let attempts = 0;
 
@@ -89,12 +98,13 @@ export async function pollGitHubToken(deviceCode: string, interval: number): Pro
     try {
       const response = await fetch('https://github.com/login/oauth/access_token', {
         method: 'POST',
+      signal: AbortSignal.timeout(15000),
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          client_id: GITHUB_CLIENT_ID,
+          client_id: clientId,
           device_code: deviceCode,
           grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
         }),
@@ -141,7 +151,7 @@ export async function pollGitHubToken(deviceCode: string, interval: number): Pro
       await new Promise(resolve => setTimeout(resolve, interval * 1000));
       attempts++;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('expired') || error.message.includes('denied')) {
+      if (error instanceof Error && (error.message.includes('expired') || error.message.includes('denied'))) {
         throw error;
       }
       logger.warn('oauth', 'GitHub token poll error', error instanceof Error ? error : undefined);
@@ -158,7 +168,7 @@ export async function pollGitHubToken(deviceCode: string, interval: number): Pro
  */
 export async function completeGitHubDeviceFlow(): Promise<OAuthFlowResult> {
   try {
-    const deviceCodeResponse = await startGitHubDeviceFlow();
+    await startGitHubDeviceFlow();
     
     // Return device code info for UI to display
     return {
@@ -180,21 +190,22 @@ export async function completeGitHubDeviceFlow(): Promise<OAuthFlowResult> {
 // GitLab OAuth Device Flow
 // ============================================================================
 
-const GITLAB_CLIENT_ID = 'example'; // Should be configurable
 const GITLAB_SCOPE = 'read_api read_repository';
 
 /**
  * Start GitLab OAuth device flow.
  */
 export async function startGitLabDeviceFlow(): Promise<DeviceCodeResponse> {
+  const clientId = getClientId('gitlab');
   try {
     const response = await fetch('https://gitlab.com/oauth/device', {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: new URLSearchParams({
-        client_id: GITLAB_CLIENT_ID,
+        client_id: clientId,
         scope: GITLAB_SCOPE,
       }),
     });
@@ -222,6 +233,8 @@ export async function startGitLabDeviceFlow(): Promise<DeviceCodeResponse> {
  * Poll for GitLab OAuth token.
  */
 export async function pollGitLabToken(deviceCode: string, interval: number): Promise<TokenResponse> {
+  const clientId = getClientId('gitlab');
+  interval = Math.min(60, Math.max(5, Number.isFinite(interval) ? interval : 5));
   const maxAttempts = 60;
   let attempts = 0;
 
@@ -229,11 +242,12 @@ export async function pollGitLabToken(deviceCode: string, interval: number): Pro
     try {
       const response = await fetch('https://gitlab.com/oauth/token', {
         method: 'POST',
+      signal: AbortSignal.timeout(15000),
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: new URLSearchParams({
-          client_id: GITLAB_CLIENT_ID,
+          client_id: clientId,
           device_code: deviceCode,
           grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
         }),
@@ -277,7 +291,7 @@ export async function pollGitLabToken(deviceCode: string, interval: number): Pro
       await new Promise(resolve => setTimeout(resolve, interval * 1000));
       attempts++;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('expired') || error.message.includes('denied')) {
+      if (error instanceof Error && (error.message.includes('expired') || error.message.includes('denied'))) {
         throw error;
       }
       logger.warn('oauth', 'GitLab token poll error', error instanceof Error ? error : undefined);

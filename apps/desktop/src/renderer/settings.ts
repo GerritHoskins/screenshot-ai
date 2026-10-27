@@ -1,3 +1,4 @@
+import { escapeHtml } from "./utils/formatting";
 /**
  * Settings UI - Phase 1: Tabbed Interface
  * Redesigned with tabs: Providers / API Keys / Context / Prompt / Diagnostics
@@ -107,7 +108,6 @@ const workspaceBadge = document.getElementById('workspace-badge') as HTMLSpanEle
 const workspaceBrowseBtn = document.getElementById('workspace-browse') as HTMLButtonElement;
 const workspaceClearBtn = document.getElementById('workspace-clear') as HTMLButtonElement;
 const workspaceMessage = document.getElementById('workspace-message') as HTMLDivElement;
-let promptMessage: HTMLDivElement;
 const includeFileTree = document.getElementById('include-file-tree') as HTMLInputElement;
 const includeFileContents = document.getElementById('include-file-contents') as HTMLInputElement;
 const excludeList = document.getElementById('exclude-list') as HTMLDivElement;
@@ -127,7 +127,7 @@ const promptResetBtn = document.getElementById('prompt-reset') as HTMLButtonElem
 const promptPreviewBtn = document.getElementById('prompt-preview') as HTMLButtonElement;
 const promptImportBtn = document.getElementById('prompt-import') as HTMLButtonElement;
 const promptExportBtn = document.getElementById('prompt-export') as HTMLButtonElement;
-promptMessage = (document.getElementById('prompt-message') as HTMLDivElement) || workspaceMessage; // Fallback if element doesn't exist
+const promptMessage = (document.getElementById('prompt-message') as HTMLDivElement) || workspaceMessage; // Fallback if element doesn't exist
 const promptModal = document.getElementById('prompt-modal') as HTMLDivElement;
 const promptModalBody = document.getElementById('prompt-modal-body') as HTMLDivElement;
 const promptModalClose = document.getElementById('prompt-modal-close') as HTMLButtonElement;
@@ -167,7 +167,6 @@ const repoCancelBtn = document.getElementById('repo-cancel-btn') as HTMLButtonEl
 // Token input modal elements
 const tokenInputModal = document.getElementById('token-input-modal') as HTMLDivElement;
 const tokenInputModalClose = document.getElementById('token-input-modal-close') as HTMLButtonElement;
-const tokenInputModalTitle = document.getElementById('token-input-modal-title') as HTMLHeadingElement;
 const tokenInputProviderName = document.getElementById('token-input-provider-name') as HTMLDivElement;
 const tokenInputField = document.getElementById('token-input-field') as HTMLInputElement;
 const tokenInputReveal = document.getElementById('token-input-reveal') as HTMLButtonElement;
@@ -179,7 +178,6 @@ let tokenInputProvider: 'github' | 'gitlab' | null = null;
 // OAuth modal elements
 const oauthModal = document.getElementById('oauth-modal') as HTMLDivElement;
 const oauthModalClose = document.getElementById('oauth-modal-close') as HTMLButtonElement;
-const oauthModalTitle = document.getElementById('oauth-modal-title') as HTMLHeadingElement;
 const oauthProviderName = document.getElementById('oauth-provider-name') as HTMLSpanElement;
 const oauthStepInit = document.getElementById('oauth-step-init') as HTMLDivElement;
 const oauthStepCode = document.getElementById('oauth-step-code') as HTMLDivElement;
@@ -196,7 +194,6 @@ const oauthCancelBtn = document.getElementById('oauth-cancel-btn') as HTMLButton
 let oauthPollingInterval: ReturnType<typeof setInterval> | null = null;
 let oauthDeviceCode: string | null = null;
 let oauthPollInterval: number = 5;
-let oauthProvider: 'github' | 'gitlab' | null = null;
 
 // ============================================================================
 // Utility Functions
@@ -250,7 +247,6 @@ function updateTestInfo(provider: 'openai' | 'anthropic', info: { lastTested?: n
   const infoEl = provider === 'openai' ? openaiTestInfo : anthropicTestInfo;
   
   if (info.lastTested) {
-    const date = new Date(info.lastTested);
     const status = info.lastTestStatus === 'success' ? '✓ Tested successfully' : '✗ Test failed';
     const latency = info.lastTestLatency ? ` (${info.lastTestLatency}ms)` : '';
     const error = info.lastTestError ? ` - ${info.lastTestError}` : '';
@@ -307,7 +303,6 @@ function updateWorkspacePath(workspaceRoot: string | null): void {
 
 function updatePromptStats(text: string): void {
   const chars = text.length;
-  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
   // Rough token estimate: ~4 characters per token for English text
   const estimatedTokens = Math.ceil(chars / 4);
   promptStats.textContent = `${chars.toLocaleString()} characters, ~${estimatedTokens.toLocaleString()} tokens`;
@@ -318,7 +313,6 @@ function updatePromptStats(text: string): void {
 // ============================================================================
 
 function setupPasswordReveal(input: HTMLInputElement, revealBtn: HTMLButtonElement): void {
-  let revealTimeout: ReturnType<typeof setTimeout> | null = null;
   let isRevealing = false;
 
   revealBtn.addEventListener('mousedown', () => {
@@ -448,7 +442,7 @@ const MODEL_LISTS: Record<string, ModelInfo[]> = {
 };
 
 // Store current model selection to preserve when switching providers
-let lastSelectedModels: Record<string, string> = {};
+const lastSelectedModels: Record<string, string> = {};
 
 function updateModelList(provider: 'openai' | 'anthropic', preserveSelection: boolean = true): void {
   const models = MODEL_LISTS[provider] || [];
@@ -523,6 +517,9 @@ async function loadSettings(): Promise<void> {
   const provider = (await api.settings.get('provider')) as 'openai' | 'anthropic' || 'openai';
   providerSelect.value = provider;
   
+  // Restore selections for both providers across application launches.
+  Object.assign(lastSelectedModels, await api.settings.get('providerModels'));
+
   // Load model if set, otherwise use default
   const model = (await api.settings.get('model')) as string | undefined;
   if (model) {
@@ -607,7 +604,6 @@ async function loadSettings(): Promise<void> {
   
   // Get settings path
   try {
-    const settingsData = await api.settings.get('_path'); // We'll add this to the IPC handler
     // For now, use a placeholder - we can enhance this later
     settingsPath.textContent = 'User Data Directory';
   } catch {
@@ -667,7 +663,6 @@ function setupKeyboardNavigation(): void {
 // Provider selection
 providerSelect.addEventListener('change', async () => {
   const provider = providerSelect.value as 'openai' | 'anthropic';
-  const previousProvider = providerSelect.getAttribute('data-previous-provider') || 'openai';
   
   // Update model list, preserving selection if possible
   updateModelList(provider, true);
@@ -739,7 +734,7 @@ openaiKeyInput.addEventListener('input', async () => {
 });
 
 // OpenAI paste handler
-openaiKeyInput.addEventListener('paste', async (e) => {
+openaiKeyInput.addEventListener('paste', async () => {
   // Wait for paste to complete, then validate
   setTimeout(async () => {
     await validateApiKeyInput('openai', openaiKeyInput, openaiValidation);
@@ -866,7 +861,7 @@ anthropicKeyInput.addEventListener('input', async () => {
 });
 
 // Anthropic paste handler
-anthropicKeyInput.addEventListener('paste', async (e) => {
+anthropicKeyInput.addEventListener('paste', async () => {
   // Wait for paste to complete, then validate
   setTimeout(async () => {
     await validateApiKeyInput('anthropic', anthropicKeyInput, anthropicValidation);
@@ -989,7 +984,7 @@ workspaceEnabled.addEventListener('change', async () => {
   excludesRow.style.display = enabled ? 'grid' : 'none';
   
   const workspaceRoot = enabled ? (await api.settings.getWorkspaceContext()).workspaceRoot : undefined;
-  const result = await api.settings.setWorkspaceContext(enabled, workspaceRoot);
+  const result = await api.settings.setWorkspaceContext(enabled, workspaceRoot ?? undefined);
   if (result.success) {
     updateSaveStatus(enabled ? 'Workspace context enabled' : 'Workspace context disabled');
   }
@@ -1025,7 +1020,7 @@ workspaceBrowseBtn.addEventListener('click', async () => {
     } else {
       showMessage(workspaceMessage, result.error || 'Failed to select workspace folder', 'error');
     }
-  } catch (error) {
+  } catch {
     workspaceBrowseBtn.disabled = false;
     workspaceBrowseBtn.textContent = 'Select Folder';
     showMessage(workspaceMessage, 'Failed to open folder picker', 'error');
@@ -1126,11 +1121,7 @@ function renderExcludeList(excludes: string[]): void {
   });
 }
 
-function escapeHtml(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
+
 
 excludeAddBtn.addEventListener('click', async () => {
   const pattern = excludeInput.value.trim();
@@ -1233,7 +1224,7 @@ async function updateContextPreview(workspaceRoot: string | null): Promise<void>
       
       // Sources info
       const sourcesInfo = preview.sources && preview.sources.length > 0
-        ? preview.sources.map(s => `  • ${s.type}: ${s.fileCount} files (${Math.round(s.size / 1024)} KB)`).join('\n')
+        ? preview.sources.map(s => `  • ${escapeHtml(s.type)}: ${s.fileCount} files (${Math.round(s.size / 1024)} KB)`).join('\n')
         : '';
       
       // Secrets warning
@@ -1260,7 +1251,7 @@ async function updateContextPreview(workspaceRoot: string | null): Promise<void>
               <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #ffc107; color: #856404; font-size: 11px;">
                 <strong>Top matches:</strong><br>
                 ${preview.secrets.matches.slice(0, 3).map(m => 
-                  `• ${escapeHtml(m.file)}:${m.line} - ${m.description}`
+                  `• ${escapeHtml(m.file)}:${m.line} - ${escapeHtml(m.description)}`
                 ).join('<br>')}
                 ${preview.secrets.matches.length > 3 ? `<br>... and ${preview.secrets.matches.length - 3} more` : ''}
               </div>
@@ -1515,12 +1506,6 @@ resetAllBtn.addEventListener('click', async () => {
 // Context Sources UI
 // ============================================================================
 
-function renderContextSources(): void {
-  // This will be implemented to load and display sources
-  // For now, placeholder
-  contextSourcesList.innerHTML = '<div style="color: #999; font-style: italic;">No sources added yet</div>';
-}
-
 function updateWorkspaceUIVisibility(sources: any[]): void {
   // Check if there are any enabled GitHub/GitLab sources
   const hasEnabledRemoteSource = sources.some(
@@ -1541,7 +1526,7 @@ function updateWorkspaceUIVisibility(sources: any[]): void {
   }
 }
 
-async function loadContextSources(): Promise<void> {
+let loadContextSources = async function (): Promise<void> {
   try {
     const sources = await api.settings.listContextSources();
     
@@ -1710,7 +1695,7 @@ async function updateRepoAuthStatus(provider: 'github' | 'gitlab'): Promise<void
       repoDisconnectBtn.style.display = 'none';
       repoOAuthBtn.style.display = 'inline-block';
     }
-  } catch (error) {
+  } catch {
     repoAuthStatusText.textContent = 'Error checking auth status';
     repoAuthStatusText.parentElement!.style.background = '#fff3cd';
     repoAuthStatusText.parentElement!.style.color = '#856404';
@@ -1724,7 +1709,7 @@ function validateRepoPickerForm(): void {
   if (provider === 'local') {
     valid = !!repoLocalPath.value.trim();
   } else if (provider === 'github' || provider === 'gitlab') {
-    const repoMatch = repoSearchInput.value.trim().match(/^([^\/]+)\/([^\/]+)$/);
+    const repoMatch = repoSearchInput.value.trim().match(/^([^/]+)\/([^/]+)$/);
     valid = !!repoMatch;
   }
   
@@ -1820,7 +1805,7 @@ tokenInputSubmitBtn.addEventListener('click', async () => {
     await updateRepoAuthStatus(tokenInputProvider);
     
     // Check if we have pending source data to add
-    const repoMatch = repoSearchInput.value.trim().match(/^([^\/]+)\/([^\/]+)$/);
+    const repoMatch = repoSearchInput.value.trim().match(/^([^/]+)\/([^/]+)$/);
     if (repoMatch && tokenInputProvider) {
       // Auto-add the source after successful auth
       const source: any = {
@@ -1880,7 +1865,6 @@ tokenInputField.addEventListener('keypress', (e) => {
 });
 
 // Password reveal for token input
-let tokenInputRevealTimeout: ReturnType<typeof setTimeout> | null = null;
 tokenInputReveal.addEventListener('mousedown', () => {
   tokenInputField.type = 'text';
   tokenInputReveal.textContent = '👁️';
@@ -1956,7 +1940,6 @@ oauthModal.addEventListener('click', (e) => {
 });
 
 async function startOAuthFlow(provider: 'github' | 'gitlab'): Promise<void> {
-  oauthProvider = provider;
   
   // Reset UI
   oauthStepInit.style.display = 'block';
@@ -1990,7 +1973,12 @@ async function startOAuthFlow(provider: 'github' | 'gitlab'): Promise<void> {
     // Display verification URI
     const verificationUri = flowResult.verificationUri || '';
     oauthVerificationUri.textContent = verificationUri;
-    oauthOpenLink.href = flowResult.verificationUriComplete || verificationUri;
+    const verificationLink = new URL(flowResult.verificationUriComplete || verificationUri);
+    const expectedHost = provider === 'github' ? 'github.com' : 'gitlab.com';
+    if (verificationLink.protocol !== 'https:' || verificationLink.hostname !== expectedHost || verificationLink.username || verificationLink.password) {
+      throw new Error('Invalid provider verification URL');
+    }
+    oauthOpenLink.href = verificationLink.href;
     
     // Start polling for token
     startOAuthPolling(provider, oauthDeviceCode, oauthPollInterval);
@@ -2039,7 +2027,7 @@ function startOAuthPolling(provider: 'github' | 'gitlab', deviceCode: string, in
           await updateRepoAuthStatus(provider);
           
           // If we have pending source data, try to add it now
-          const repoMatch = repoSearchInput.value.trim().match(/^([^\/]+)\/([^\/]+)$/);
+          const repoMatch = repoSearchInput.value.trim().match(/^([^/]+)\/([^/]+)$/);
           if (repoMatch) {
             // Auto-add the source after successful auth
             const source: any = {
@@ -2133,7 +2121,7 @@ function startOAuthPolling(provider: 'github' | 'gitlab', deviceCode: string, in
         } else {
           // Network or other error - continue polling but show warning
           oauthPollingStatus.innerHTML = `
-            <div style="color: #f57c00; margin-bottom: 4px;">⚠️ ${result.error || 'Polling error'}</div>
+            <div style="color: #f57c00; margin-bottom: 4px;">⚠️ ${escapeHtml(result.error || 'Polling error')}</div>
             <div class="spinner" style="display: inline-block; margin-right: 8px;"></div>
             <span style="font-size: 12px;">Retrying...</span>
           `;
@@ -2147,7 +2135,7 @@ function startOAuthPolling(provider: 'github' | 'gitlab', deviceCode: string, in
       } else {
         // Network error - continue polling
         oauthPollingStatus.innerHTML = `
-          <div style="color: #f57c00; margin-bottom: 4px;">⚠️ ${error instanceof Error ? error.message : 'Network error'}</div>
+          <div style="color: #f57c00; margin-bottom: 4px;">⚠️ ${escapeHtml(error instanceof Error ? error.message : 'Network error')}</div>
           <div class="spinner" style="display: inline-block; margin-right: 8px;"></div>
           <span style="font-size: 12px;">Retrying...</span>
         `;
@@ -2188,7 +2176,7 @@ repoAddBtn.addEventListener('click', async () => {
   if (provider === 'local') {
     source.scope.path = repoLocalPath.value.trim();
   } else if (provider === 'github' || provider === 'gitlab') {
-    const repoMatch = repoSearchInput.value.trim().match(/^([^\/]+)\/([^\/]+)$/);
+    const repoMatch = repoSearchInput.value.trim().match(/^([^/]+)\/([^/]+)$/);
     if (!repoMatch) {
       showToast('Invalid repository format. Use owner/repo', 'error');
       return;

@@ -104,7 +104,7 @@ export function analyzeWorkspace(workspaceRoot: string): WorkspaceInfo | null {
       type = 'npm';
       
       try {
-        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
         // Detect package manager from lock files
         if (fs.existsSync(path.join(workspaceRoot, 'yarn.lock'))) {
           packageManager = 'yarn';
@@ -323,10 +323,11 @@ export function generateWorkspaceSummary(info: WorkspaceInfo, fileTree: FileTree
  * Load complete workspace context.
  */
 export async function loadWorkspaceContext(
-  startDir: string = process.cwd()
+  startDir: string = process.cwd(),
+  exactRoot = false
 ): Promise<WorkspaceContext | null> {
   try {
-    const workspaceRoot = detectWorkspaceRoot(startDir);
+    const workspaceRoot = exactRoot ? path.resolve(startDir) : detectWorkspaceRoot(startDir);
     if (!workspaceRoot) {
       logger.debug('context', 'No workspace root detected', { startDir });
       return null;

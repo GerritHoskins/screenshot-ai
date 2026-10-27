@@ -5,7 +5,7 @@
  * for the ScreenshotAI renderer application.
  */
 
-import type { AIResponse, ScreenshotAnalysis } from "@types/ai-response";
+import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
 
 export interface AppState {
   // Analysis state

@@ -1,5 +1,6 @@
-const grid = document.getElementById("grid");
-const cancelBtn = document.getElementById("cancel");
+export {};
+const grid = document.getElementById("grid") as HTMLDivElement;
+const cancelBtn = document.getElementById("cancel") as HTMLButtonElement;
 const api = window.chooserApi;
 
 api.onList((payload) => {

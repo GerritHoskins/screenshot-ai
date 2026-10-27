@@ -10,9 +10,9 @@ import {
   ProviderConfig,
   DEFAULT_PROVIDER_CONFIG,
   withRetry,
-  withTimeout,
-  mapError,
-  ErrorMapping,
+  withAbortTimeout,
+  isAIError,
+  providerHttpError,
   parseJsonResponse,
 } from './base';
 
@@ -61,20 +61,7 @@ interface AnthropicResponse {
 // Error Mappings
 // ============================================================================
 
-const ANTHROPIC_ERROR_MAPPINGS: ErrorMapping[] = [
-  { pattern: /rate_limit/i, code: 'RATE_LIMIT', retryable: true },
-  { pattern: /overloaded/i, code: 'RATE_LIMIT', retryable: true },
-  { pattern: /timeout/i, code: 'TIMEOUT', retryable: true },
-  { pattern: /529/i, code: 'RATE_LIMIT', retryable: true },
-  { pattern: /401/i, code: 'AUTH_ERROR', retryable: false },
-  { pattern: /403/i, code: 'AUTH_ERROR', retryable: false },
-  { pattern: /404/i, code: 'INVALID_REQUEST', retryable: false },
-  { pattern: /not_found|model.*not.*found/i, code: 'INVALID_REQUEST', retryable: false },
-  { pattern: /invalid.*key/i, code: 'AUTH_ERROR', retryable: false },
-  { pattern: /content.*block/i, code: 'CONTENT_FILTERED', retryable: false },
-  { pattern: /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET/i, code: 'NETWORK_ERROR', retryable: true },
-  { pattern: /fetch failed/i, code: 'NETWORK_ERROR', retryable: true },
-];
+
 
 // ============================================================================
 // Anthropic Provider Configuration
@@ -170,10 +157,9 @@ export class AnthropicProvider implements AIProvider {
         temperature: this.config.temperature,
       };
 
-      const response = await withTimeout(
-        this.fetchCompletion(request),
-        this.config.timeout,
-        createAIError('TIMEOUT', `Request timed out after ${this.config.timeout}ms`)
+      const response = await withAbortTimeout(
+        signal => this.fetchCompletion(request, signal),
+        this.config.timeout
       );
 
       const latencyMs = Date.now() - startTime;
@@ -202,37 +188,16 @@ export class AnthropicProvider implements AIProvider {
 
         // Validation happens in analysis service if T is ScreenshotAnalysis
         return createSuccessResponse(parsed, metadata);
-      } catch (parseError) {
-        // Enhanced parse error handling
-        let errorMessage = 'Failed to parse JSON response';
-        let errorDetails: Record<string, unknown> = { rawContent: textContent.text.slice(0, 500) };
-        
-        if (parseError instanceof SyntaxError) {
-          // Try to extract useful info from syntax error
-          const match = parseError.message.match(/position (\d+)/);
-          if (match) {
-            const position = parseInt(match[1], 10);
-            errorMessage = `JSON syntax error at position ${position}: ${parseError.message}`;
-            errorDetails.position = position;
-            errorDetails.context = textContent.text.slice(Math.max(0, position - 50), position + 50);
-          } else {
-            errorMessage = `JSON syntax error: ${parseError.message}`;
-          }
-        }
-        
+      } catch {
         return createErrorResponse(
-          createAIError('PARSE_ERROR', errorMessage, {
-            details: errorDetails,
-            cause: parseError instanceof Error ? parseError : undefined,
-          }),
+          createAIError('PARSE_ERROR', 'The provider returned invalid JSON.'),
           metadata
         );
       }
     } catch (error) {
       const latencyMs = Date.now() - startTime;
-      const aiError = error instanceof Error && 'code' in error && 'retryable' in error
-        ? (error as unknown as import('../types/ai-response').AIError)
-        : mapError(error, ANTHROPIC_ERROR_MAPPINGS);
+      const aiError = isAIError(error) ? error
+        : createAIError('NETWORK_ERROR', 'Unable to complete the provider request.');
 
       return createErrorResponse(aiError, {
         model: this.config.model,
@@ -245,87 +210,21 @@ export class AnthropicProvider implements AIProvider {
     }
   }
 
-  private async fetchCompletion(request: AnthropicRequest, retryCount = 0): Promise<AnthropicResponse> {
-    const url = `${this.config.baseUrl}/v1/messages`;
-
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.config.apiKey,
-          'anthropic-version': this.config.anthropicVersion!,
-          'Connection': 'close', // Disable keep-alive to avoid ECONNRESET
-        },
-        body: JSON.stringify(request),
-        // @ts-ignore - keepalive is valid but not in all type definitions
-        keepalive: false,
-      });
-    } catch (fetchError: any) {
-      // Check if this is an ECONNRESET or similar network error
-      const isConnectionReset = fetchError?.cause?.code === 'ECONNRESET' ||
-        fetchError?.cause?.code === 'ECONNREFUSED' ||
-        fetchError?.cause?.code === 'ETIMEDOUT' ||
-        fetchError?.message?.includes('ECONNRESET');
-
-      // Retry connection reset errors with increasing delay (up to 3 internal retries)
-      if (isConnectionReset && retryCount < 3) {
-        const delay = Math.min(2000 * Math.pow(2, retryCount), 10000); // 2s, 4s, 8s
-        console.log(`[Anthropic] Connection reset, internal retry ${retryCount + 1}/3 after ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return this.fetchCompletion(request, retryCount + 1);
-      }
-
-      // Network-level error (DNS, connection refused, timeout, etc.)
-      const message = fetchError instanceof Error ? fetchError.message : String(fetchError);
-      const cause = fetchError?.cause ? ` (cause: ${fetchError.cause.message || fetchError.cause})` : '';
-      const code = fetchError?.code ? ` [${fetchError.code}]` : '';
-      console.error('Anthropic fetch error:', fetchError);
-      throw new Error(`Network error calling Anthropic API: ${message}${code}${cause}`);
-    }
-
+  private async fetchCompletion(request: AnthropicRequest, signal: AbortSignal): Promise<AnthropicResponse> {
+    const response = await fetch(`${this.config.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.config.apiKey,
+        'anthropic-version': this.config.anthropicVersion!,
+      },
+      body: JSON.stringify(request),
+      signal,
+    });
     if (!response.ok) {
-      const errorBody = await response.text();
-      let errorMessage = `Anthropic API error ${response.status}: ${errorBody}`;
-      
-      // Parse error response for better error messages
-      try {
-        const errorJson = JSON.parse(errorBody);
-        if (errorJson.error?.message) {
-          errorMessage = errorJson.error.message;
-        }
-        if (errorJson.error?.type === 'not_found_error' && errorJson.error.message?.includes('model')) {
-          errorMessage = `Model not found: ${this.config.model}. Please check the model name is correct. Available models: claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001, claude-opus-4-5-20251101`;
-        }
-      } catch {
-        // Use raw error body if parsing fails
-      }
-      
-      // Handle rate limits (429 = rate limit, 529 = overloaded)
-      if (response.status === 429 || response.status === 529) {
-        const retryAfter = response.headers.get('Retry-After');
-        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : null;
-        
-        const error = new Error(errorMessage);
-        
-        if (retryAfterSeconds) {
-          (error as any).retryAfterSeconds = retryAfterSeconds;
-        }
-        
-        throw error;
-      }
-      
-      // Handle 404 (model not found, invalid endpoint)
-      if (response.status === 404) {
-        const error = new Error(errorMessage);
-        (error as any).statusCode = 404;
-        throw error;
-      }
-      
-      throw new Error(errorMessage);
+      await response.body?.cancel();
+      throw providerHttpError('Anthropic', response.status, response.headers.get('Retry-After'));
     }
-
     return response.json() as Promise<AnthropicResponse>;
   }
 }

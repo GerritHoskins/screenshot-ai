@@ -2,8 +2,8 @@
  * Analysis Service - Wires AI providers into Electron main process
  */
 
-import type { AIResponse, ScreenshotAnalysis } from '@types/ai-response';
-import { createSuccessResponse, createErrorResponse, createAIError } from '@types/ai-response';
+import type { AIResponse, ScreenshotAnalysis } from '@shared-types/ai-response';
+import { createSuccessResponse, createErrorResponse, createAIError } from '@shared-types/ai-response';
 import { createProvider, type ProviderType } from '@providers';
 import { getApiKey } from '@security/keychain';
 import { 
@@ -11,13 +11,10 @@ import {
   generateFeedbackBasedRetryPrompt 
 } from '@prompts/templates';
 import type { ProviderConfig } from '@providers/base';
-import { validateAndNormalizeScreenshotAnalysis, formatValidationErrors } from '@types/validation';
-import { loadWorkspaceContext, loadRelevantFiles, formatFilesAsContext } from '@context';
+import { validateAndNormalizeScreenshotAnalysis, formatValidationErrors } from '@shared-types/validation';
 import { loadUnifiedContext, formatUnifiedContextAsText } from '@context/unified-loader';
 import { scanForSecrets } from '@context/secret-scanner';
-import { getLogger } from '@logging';
 
-const logger = getLogger({ minLevel: 0 });
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
@@ -59,7 +56,6 @@ export class AnalysisService {
   constructor(config: AnalysisConfig) {
     // Ensure provider is valid
     if (!config.provider || (config.provider !== 'openai' && config.provider !== 'anthropic')) {
-      console.warn('[AnalysisService] Invalid provider, defaulting to openai:', config.provider);
       this.providerType = 'openai';
     } else {
       this.providerType = config.provider;
@@ -102,84 +98,20 @@ export class AnalysisService {
       };
     }
 
-    // Load workspace context from all enabled sources (local, GitHub, GitLab)
+    // Persisted settings are enforced by the shared loader used by preview.
     let workspaceContextText = '';
-    console.log('[Analysis] Context config:', {
-      workspaceContextEnabled: this.config.workspaceContextEnabled,
-      configWorkspaceRoot: this.config.workspaceRoot,
-      paramWorkspaceRoot: workspaceRoot,
-    });
     if (this.config.workspaceContextEnabled !== false) {
       try {
-        // Try unified context loader first (supports multiple sources)
-        console.log('[Analysis] Loading unified context...');
-        const unifiedContext = await loadUnifiedContext({
-          includeFileTree: true,
-          includeFileContents: true,
-          maxFiles: 5,
-          maxFileSize: 50 * 1024, // 50 KB per file
-          maxTotalSize: 200 * 1024, // 200 KB total
-        });
-        console.log('[Analysis] Unified context result:', {
-          fileCount: unifiedContext.files.length,
-          sourceCount: unifiedContext.stats.sources.length,
-          totalSize: unifiedContext.stats.totalSize,
-        });
-
-        if (unifiedContext.files.length > 0) {
-          // Scan for secrets before including context
-          const secretScan = scanForSecrets(unifiedContext.files);
-          
-          if (secretScan.hasSecrets && secretScan.riskLevel === 'high') {
-            logger.warn('analysis', 'High-risk secrets detected in context', {
-              matchCount: secretScan.matches.length,
-              highRisk: secretScan.summary.high,
-            });
-            // Log warning but continue (user should have been warned in preview)
-          }
-          
-          workspaceContextText = formatUnifiedContextAsText(unifiedContext);
-          logger.info('analysis', 'Unified context loaded', {
-            fileCount: unifiedContext.files.length,
-            sourceCount: unifiedContext.stats.sources.length,
-            totalSize: unifiedContext.stats.totalSize,
-            secretsDetected: secretScan.hasSecrets,
-            riskLevel: secretScan.riskLevel,
-          });
-        } else {
-          // Fallback to legacy local workspace context
-          console.log('[Analysis] Unified context empty, trying fallback...');
-          const effectiveWorkspaceRoot = workspaceRoot || this.config.workspaceRoot;
-          console.log('[Analysis] Effective workspace root:', effectiveWorkspaceRoot);
-          if (effectiveWorkspaceRoot) {
-            const workspaceContext = await loadWorkspaceContext(effectiveWorkspaceRoot);
-            if (workspaceContext) {
-              const loadedFiles = loadRelevantFiles(workspaceContext, {
-                maxFiles: 5,
-                maxFileSize: 50 * 1024, // 50 KB per file
-                maxTotalSize: 200 * 1024, // 200 KB total
-              });
-              
-              if (loadedFiles.length > 0) {
-                workspaceContextText = formatFilesAsContext(loadedFiles);
-                logger.info('analysis', 'Legacy workspace context loaded', {
-                  workspaceRoot: workspaceContext.info.root,
-                  fileCount: loadedFiles.length,
-                });
-              }
-            }
-          }
+        const context = await loadUnifiedContext({ workspaceRoot: workspaceRoot ?? this.config.workspaceRoot });
+        const scan = scanForSecrets(context.files);
+        if (scan.hasSecrets) {
+          return this.privacyError();
         }
-      } catch (error) {
-        logger.warn('analysis', 'Failed to load workspace context', { error });
-        console.log('[Analysis] Context loading error:', error);
-        // Continue without workspace context
+        workspaceContextText = formatUnifiedContextAsText(context);
+      } catch {
+        return this.privacyError('Context could not be verified. Review context settings or disable repository context and try again.');
       }
-    } else {
-      console.log('[Analysis] Workspace context disabled, skipping context loading');
     }
-
-    console.log('[Analysis] Final workspace context length:', workspaceContextText.length);
 
     // Generate prompt (use feedback-aware prompt if retrying with feedback)
     let prompt: string;
@@ -188,7 +120,6 @@ export class AnalysisService {
       // Use feedback-based retry prompt template
       // This provides better structure and consistency with the prompt system
       prompt = generateFeedbackBasedRetryPrompt(previousFeedback, 2);
-      console.log('[Analysis] Using feedback-aware prompt');
       // Add workspace context to retry prompt if available
       if (workspaceContextText) {
         prompt = `${prompt}\n\n${workspaceContextText}`;
@@ -196,16 +127,13 @@ export class AnalysisService {
     } else {
       // Use standard prompt with workspace context
       const customPrompt = loadCustomPrompt();
-      console.log('[Analysis] Custom prompt loaded:', customPrompt ? 'YES' : 'NO');
       if (customPrompt) {
-        console.log('[Analysis] Custom prompt preview:', customPrompt.slice(0, 200));
         prompt = customPrompt;
         usingCustomPrompt = true;
         if (workspaceContextText) {
           prompt = `${prompt}\n\n${workspaceContextText}`;
         }
       } else {
-        console.log('[Analysis] Using default prompt template');
         prompt = generateScreenshotAnalysisPrompt(workspaceContextText);
       }
     }
@@ -219,18 +147,11 @@ export class AnalysisService {
       (/confidence/i.test(prompt) && /json/i.test(prompt))
     );
 
-    if (hasCustomSchema) {
-      console.log('[Analysis] Custom prompt has its own schema, not adding default schema');
-    } else if (!usingCustomPrompt) {
-      // Default prompts already have schema from generateScreenshotAnalysisPrompt
-      console.log('[Analysis] Using default prompt (already has schema)');
-    } else {
-      // Custom prompt without schema - add default schema hint
-      console.log('[Analysis] Custom prompt missing schema, adding default schema hint');
-      prompt = ensureSchemaHint(prompt);
+    if (usingCustomPrompt && !hasCustomSchema) prompt = ensureSchemaHint(prompt);
+    // Check custom prompts and tree/path text as well as file contents.
+    if (scanForSecrets([{ path: 'prompt.txt', content: prompt, size: Buffer.byteLength(prompt), truncated: false }]).hasSecrets) {
+      return this.privacyError();
     }
-    console.log('[Analysis] Final prompt length:', prompt.length);
-    console.log('[Analysis] Final prompt preview:', prompt.slice(0, 300));
 
     // Create provider with config
     const providerConfig: ProviderConfig = {
@@ -246,7 +167,7 @@ export class AnalysisService {
     const provider = createProvider(this.providerType, {
       ...providerConfig,
       apiKey,
-    } as any);
+    });
 
     // Validate provider config
     const isValid = await provider.validateConfig();
@@ -273,21 +194,11 @@ export class AnalysisService {
     try {
       const response = await provider.complete<ScreenshotAnalysis>(prompt, image);
 
-      // Debug: Log raw AI response
-      console.log('[Analysis] Raw AI response:', {
-        success: response.success,
-        hasData: !!response.data,
-        dataKeys: response.data ? Object.keys(response.data) : [],
-      });
-      console.log('[Analysis] Raw data:', JSON.stringify(response.data, null, 2));
-
       // Validate response data if successful
       if (response.success && response.data) {
         // For custom prompts, skip strict validation and pass through the data
         // Custom prompts define their own schema
         if (usingCustomPrompt) {
-          console.log('[Analysis] Custom prompt - skipping strict validation');
-          console.log('[Analysis] Returning custom prompt data:', Object.keys(response.data));
           // Ensure confidence exists for display purposes, default to 0.5 if not present
           const customData = {
             ...response.data,
@@ -297,15 +208,8 @@ export class AnalysisService {
         }
 
         const validation = validateAndNormalizeScreenshotAnalysis(response.data);
-        console.log('[Analysis] Validation result:', {
-          valid: validation.valid,
-          errors: validation.errors,
-          dataKeys: validation.data ? Object.keys(validation.data) : [],
-        });
 
-        if (!validation.valid) {
-          // Replace response with validation error
-          console.log('[Analysis] Validation FAILED:', validation.errors);
+        if (!validation.valid || !validation.data) {
           return createErrorResponse(
             createAIError('VALIDATION_ERROR', formatValidationErrors(validation.errors!), {
               details: { errors: validation.errors },
@@ -313,17 +217,7 @@ export class AnalysisService {
             response.metadata
           );
         }
-        // Use validated data
-        console.log('[Analysis] Validation PASSED, returning data:', {
-          hasAnswer: !!validation.data?.answer,
-          hasText: !!validation.data?.text,
-          textLength: validation.data?.text?.length,
-          hasCodeBlocks: !!(validation.data?.codeBlocks?.length),
-          hasStructuredData: !!validation.data?.structuredData,
-          confidence: validation.data?.confidence,
-        });
         const successResponse = createSuccessResponse(validation.data, response.metadata);
-        console.log('[Analysis] Success response data keys:', Object.keys(successResponse.data || {}));
         return successResponse;
       }
 
@@ -355,6 +249,13 @@ export class AnalysisService {
   /**
    * Get default model for the provider.
    */
+  private privacyError(message = 'Potential sensitive data detected. Remove it from context or custom prompts, or disable repository context, then try again.'): AIResponse<ScreenshotAnalysis> {
+    return createErrorResponse(createAIError('INVALID_REQUEST', message), {
+      model: this.config.model || this.getDefaultModel(), provider: this.providerType,
+      promptTokens: 0, completionTokens: 0, latencyMs: 0, attemptNumber: 1,
+    });
+  }
+
   private getDefaultModel(): string {
     switch (this.providerType) {
       case 'openai':
@@ -389,11 +290,10 @@ function getProviderFromSettings(): ProviderType {
     const settingsPath = path.join(app.getPath('userData'), 'settings.json');
     if (fs.existsSync(settingsPath)) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.provider === 'openai' || settings.provider === 'anthropic') {
-        return settings.provider;
-      }
+      const provider = typeof settings.provider === 'object' ? settings.provider?.selectedProvider : settings.provider;
+      if (provider === 'openai' || provider === 'anthropic') return provider;
     }
-  } catch (error) {
+  } catch {
     // Fall back to default
   }
   return 'openai';
@@ -411,28 +311,23 @@ export function getAnalysisService(config?: AnalysisConfig): AnalysisService {
     config = { provider, model };
   }
   
-  // Create new service if provider changed, or if model is specified and different
-  if (!defaultService || 
-      config.provider !== defaultService.providerType ||
-      (config.model && config.model !== (defaultService as any).config?.model)) {
-    defaultService = new AnalysisService(config);
-  }
+  // Re-read config on every capture/retry so privacy and provider changes take effect.
+  defaultService = new AnalysisService(config);
   return defaultService;
 }
 
 /**
  * Get model from settings for the given provider.
  */
-function getModelFromSettings(provider: ProviderType): string | undefined {
+function getModelFromSettings(_provider: ProviderType): string | undefined {
   try {
     const settingsPath = path.join(app.getPath('userData'), 'settings.json');
     if (fs.existsSync(settingsPath)) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      if (settings.model) {
-        return settings.model;
-      }
+      const model = settings.provider?.selectedModel ?? settings.model;
+      if (typeof model === 'string') return model;
     }
-  } catch (error) {
+  } catch {
     // Fall back to default
   }
   return undefined; // Will use provider default
@@ -447,7 +342,8 @@ function loadCustomPrompt(): string | null {
     const settingsPath = path.join(app.getPath('userData'), 'settings.json');
     if (!fs.existsSync(settingsPath)) return null;
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    if (!settings.promptEnabled) return null;
+    if (!(settings.prompt?.useCustom ?? settings.promptEnabled)) return null;
+    if (typeof settings.prompt?.customText === 'string') return settings.prompt.customText.trim() || null;
 
     const promptPath = path.join(app.getPath('userData'), 'custom-prompt.txt');
     if (!fs.existsSync(promptPath)) return null;

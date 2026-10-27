@@ -5,27 +5,35 @@
 /**
  * Escape HTML to prevent XSS
  */
-export function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+export function escapeHtml(text: unknown): string {
+  return String(text ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]!);
 }
 
 /**
  * Format answer with markdown-style code blocks
  */
-export function formatAnswer(text: string): string {
-  let formatted = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const langLabel = lang ? `<div class="code-lang">${escapeHtml(lang)}</div>` : '';
-    return `<div class="code-block">${langLabel}<pre><code>${escapeHtml(code.trim())}</code></pre></div>`;
-  });
-  
-  formatted = formatted.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
-  formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  formatted = formatted.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  formatted = formatted.replace(/\n/g, '<br>');
-  
-  return formatted;
+export function formatAnswer(text: unknown): string {
+  // Escape each original text segment before adding our own limited markup.
+  // Code blocks are kept separate so inline formatting cannot rewrite them.
+  return String(text ?? '').split(/(```\w*\n[\s\S]*?```)/g).map(segment => {
+    const block = /^```(\w*)\n([\s\S]*?)```$/.exec(segment);
+    if (block) {
+      const label = block[1] ? `<div class="code-lang">${escapeHtml(block[1])}</div>` : '';
+      return `<div class="code-block">${label}<pre><code>${escapeHtml(block[2].trim())}</code></pre></div>`;
+    }
+    return escapeHtml(segment)
+      .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+  }).join('');
+}
+
+export function normalizeSeverity(value: unknown): 'high' | 'medium' | 'low' {
+  const severity = String(value ?? '').toLowerCase();
+  return severity === 'high' || severity === 'low' ? severity : 'medium';
 }
 
 /**

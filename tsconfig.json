@@ -17,17 +17,27 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@types/*": ["src/types/*"],
+      "@shared-types/*": ["src/types/*"],
+      "@providers": ["src/providers/index.ts"],
       "@providers/*": ["src/providers/*"],
+      "@logging": ["src/logging/index.ts"],
+      "@errors": ["src/errors/index.ts"],
+      "@context": ["src/context/index.ts"],
       "@security/*": ["src/security/*"],
       "@context/*": ["src/context/*"],
+      "@prompts/*": ["src/prompts/*"],
+      "@utils/*": ["src/utils/*"],
       "@settings/*": ["src/settings/*"]
     },
     "types": ["node", "vitest/globals"]
   },
   "include": [
     "src/**/*.ts",
-    "tests/**/*.ts"
+    "apps/**/*.ts",
+    "packages/**/*.ts",
+    "tests/**/*.ts",
+    "*.config.ts",
+    "*.config.mts"
   ],
   "exclude": [
     "node_modules",

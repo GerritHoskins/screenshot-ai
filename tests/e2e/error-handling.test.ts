@@ -1,221 +1,27 @@
-/**
- * Error Handling E2E Tests - Workstream H.2
- * Tests error handling flows: network errors, timeouts, invalid responses.
- */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { analysisResult, cleanup, launchApp, sendToRenderer, type TestApp } from './setup';
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { BrowserWindow } from 'electron';
-import {
-  launchApp,
-  waitForWindowReady,
-  waitForElement,
-  getElementText,
-  cleanup,
-  executeInRenderer,
-} from './setup';
+describe('Built desktop error handling', () => {
+  let app: TestApp;
+  beforeAll(async () => { app = await launchApp(); }, 30_000);
+  afterAll(async () => { if (app) await cleanup(app); });
 
-describe('Error Handling', () => {
-  let mainWindow: BrowserWindow;
-
-  beforeEach(async () => {
-    await cleanup();
-    mainWindow = await launchApp();
-    await waitForWindowReady(mainWindow);
+  it.each(['NETWORK_ERROR', 'TIMEOUT', 'AUTH_ERROR'])('displays %s from main IPC', async (code) => {
+    await sendToRenderer(app, 'analysis:error', { code, message: 'Safe failure message', retryable: code !== 'AUTH_ERROR' });
+    await app.page.waitForFunction((expected) => document.querySelector('#status-text')?.textContent?.includes(expected), code);
+    expect(await app.page.locator('#content-issues').textContent()).toContain('Safe failure message');
   });
 
-  afterEach(async () => {
-    await cleanup();
+  it('escapes untrusted error text', async () => {
+    await sendToRenderer(app, 'analysis:error', { code: 'NETWORK_ERROR', message: '<img src=x onerror="window.__errorInjection=1">', retryable: true });
+    await app.page.waitForFunction(() => document.querySelector('#content-issues')?.textContent?.includes('<img'));
+    expect(await app.page.locator('#content-issues img').count()).toBe(0);
+    expect(await app.page.evaluate(() => (window as any).__errorInjection)).toBeUndefined();
   });
 
-  it('should display network error messages', async () => {
-    const mockError = {
-      code: 'NETWORK_ERROR',
-      message: 'Network request failed. Please check your internet connection.',
-      retryable: true,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#status', 2000);
-
-    const statusText = await getElementText(mainWindow, '#status');
-    expect(statusText.toLowerCase()).toContain('error');
-  });
-
-  it('should display timeout error messages', async () => {
-    const mockError = {
-      code: 'TIMEOUT',
-      message: 'Request timed out after 30s. Check your internet connection or try again.',
-      retryable: true,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#status', 2000);
-
-    const statusText = await getElementText(mainWindow, '#status');
-    expect(statusText.toLowerCase()).toContain('timeout');
-  });
-
-  it('should display authentication error messages', async () => {
-    const mockError = {
-      code: 'AUTH_ERROR',
-      message: 'Invalid API key. Please check your settings.',
-      retryable: false,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#status', 2000);
-
-    const statusText = await getElementText(mainWindow, '#status');
-    expect(statusText.toLowerCase()).toContain('error');
-  });
-
-  it('should display parse error messages', async () => {
-    const mockError = {
-      code: 'PARSE_ERROR',
-      message: 'Failed to parse JSON response',
-      retryable: true,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#status', 2000);
-
-    const statusText = await getElementText(mainWindow, '#status');
-    expect(statusText.toLowerCase()).toContain('error');
-  });
-
-  it('should enable retry for retryable errors', async () => {
-    const mockError = {
-      code: 'RATE_LIMIT',
-      message: 'Rate limit exceeded',
-      retryable: true,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#retry', 2000);
-
-    const isDisabled = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#retry')?.disabled || false"
-    );
-
-    expect(isDisabled).toBe(false);
-  });
-
-  it('should disable retry for non-retryable errors', async () => {
-    const mockError = {
-      code: 'AUTH_ERROR',
-      message: 'Invalid API key',
-      retryable: false,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#retry', 2000);
-
-    const isDisabled = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#retry')?.disabled || false"
-    );
-
-    expect(isDisabled).toBe(true);
-  });
-
-  it('should display error details in result area', async () => {
-    const mockError = {
-      code: 'NETWORK_ERROR',
-      message: 'Network request failed',
-      retryable: true,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#result', 2000);
-
-    const resultText = await getElementText(mainWindow, '#result');
-    expect(resultText.toLowerCase()).toContain('network');
-  });
-
-  it('should handle validation errors', async () => {
-    const mockError = {
-      code: 'VALIDATION_ERROR',
-      message: 'Schema validation failed',
-      retryable: true,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#status', 2000);
-
-    const statusText = await getElementText(mainWindow, '#status');
-    expect(statusText.toLowerCase()).toContain('error');
+  it('recovers from an error when a later result arrives', async () => {
+    await sendToRenderer(app, 'analysis:result', analysisResult('Recovered result'));
+    await app.page.waitForFunction(() => document.querySelector('#status-text')?.textContent?.includes('Analysis complete'));
+    expect(await app.page.locator('#content-summary').textContent()).toContain('Recovered result');
   });
 });

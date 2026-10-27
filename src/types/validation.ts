@@ -3,7 +3,7 @@
  * Runtime validation for AIResponse and ScreenshotAnalysis.
  */
 
-import type { ScreenshotAnalysis, CodeBlock } from './ai-response';
+import type { ScreenshotAnalysis } from './ai-response';
 
 // ============================================================================
 // Validation Errors
@@ -43,7 +43,7 @@ export function validateScreenshotAnalysis(data: unknown): data is ScreenshotAna
   const errors: ValidationError[] = [];
 
   // Validate confidence (required)
-  if (typeof obj.confidence !== 'number') {
+  if (typeof obj.confidence !== 'number' || !Number.isFinite(obj.confidence)) {
     errors.push({
       field: 'confidence',
       message: 'Must be a number',

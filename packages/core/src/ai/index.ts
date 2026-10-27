@@ -30,7 +30,7 @@ export async function analyzeImage(image: Buffer, opts: AnalyzeOptions): Promise
     return {
       success: true,
       data: {
-        text: parsed?.summary ?? result.text,
+        text: typeof parsed?.summary === 'string' ? parsed.summary : result.text,
         structuredData: parsed ?? undefined,
         confidence
       },

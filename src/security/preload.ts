@@ -11,8 +11,6 @@
 
 import type { AIResponse, ScreenshotAnalysis } from '../types/ai-response';
 import {
-  ALLOWED_MAIN_TO_RENDERER_CHANNELS,
-  ALLOWED_RENDERER_TO_MAIN_CHANNELS,
   isValidMainToRendererChannel,
   isValidRendererToMainChannel,
   MainToRendererChannel,
@@ -145,7 +143,7 @@ export function createPreloadBridge(
     },
 
     settings: {
-      get: (key) => safeInvoke('settings:get', key) as Promise<unknown>,
+      get: <T>(key: string) => safeInvoke('settings:get', key) as Promise<T | null>,
       set: (key, value) => safeInvoke('settings:set', { key, value }) as Promise<void>,
       onUpdated: (cb) => safeOn('settings:updated', cb as (...args: unknown[]) => void),
     },

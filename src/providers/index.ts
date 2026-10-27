@@ -7,7 +7,7 @@ export * from './base';
 export * from './openai';
 export * from './anthropic';
 
-import { AIProvider, ProviderConfig } from './base';
+import { AIProvider } from './base';
 import { OpenAIProvider, OpenAIConfig } from './openai';
 import { AnthropicProvider, AnthropicConfig } from './anthropic';
 

@@ -1,54 +1,32 @@
-# E2E Tests - Workstream H.2
+# Desktop end-to-end tests
 
-End-to-end tests for the ScreenshotAI Electron application.
+These Vitest suites use Playwright's Electron driver to launch the real production bundle and interact with its renderer/preload bridge.
 
-## Test Structure
+## Run
 
-- **`setup.ts`** - Test harness utilities for launching and interacting with Electron windows
-- **`capture-flow.test.ts`** - Tests for capture functionality
-- **`analysis-flow.test.ts`** - Tests for AI analysis flow
-- **`settings-flow.test.ts`** - Tests for settings UI
-- **`error-handling.test.ts`** - Tests for error handling scenarios
-
-## Running Tests
-
-```bash
-# Run all E2E tests
+```sh
+npm ci
 npm run test:e2e
-
-# Run specific test file
-npm run test:e2e -- tests/e2e/capture-flow.test.ts
-
-# Run with watch mode
-npm run test:watch -- tests/e2e
+# Complete suite, including the build and unit tests:
+npm test
 ```
 
-## Test Utilities
+The scripts build the app before launching it. When dependencies were installed with `--ignore-scripts`, install the Electron runtime and rebuild native dependencies first:
 
-The `setup.ts` file provides utilities for:
-- Launching Electron app windows
-- Waiting for elements to appear
-- Interacting with UI elements (click, input, etc.)
-- Executing JavaScript in renderer process
-- Cleanup between tests
+```sh
+node node_modules/electron/install.js
+npm run postinstall
+```
 
-## Notes
+On Linux, provide libsecret development headers for keytar installation and a display server; CI runs `xvfb-run --auto-servernum npm run test:e2e`.
 
-- E2E tests require the Electron app to be built (`npm run build`)
-- Tests use Electron's built-in testing capabilities
-- Some tests simulate IPC events rather than actual OS-level interactions
-- Tests run with a 10-second timeout by default
+## Isolation and coverage
 
-## CI Integration
+- `fixture.cjs` gives each test app a disposable user-data directory beneath `.cache/e2e/` and checks that keytar loads in Electron.
+- `setup.ts` launches the built main process, waits for the real preload, and delivers synthetic results through real main-to-renderer IPC.
+- Suites cover startup/global shortcut registration, processing/cancellation, result/error rendering, HTML-injection/CSP defenses, and settings persistence/invalid-input rejection.
+- Tests never initiate screen capture, call AI providers, or access real saved credentials.
+- Electron launch failures are test failures, not silent skips. The CI workflow treats E2E failures as blocking.
+- Node V8 coverage does not include code executed in the separate Electron processes.
 
-E2E tests are included in the CI workflow but marked as `continue-on-error: true` because:
-- They may be flaky in CI environments
-- They require Electron to be properly built
-- OS-level interactions (like global hotkeys) may not work in CI
-
-## Future Enhancements
-
-- Add tests for actual capture flow (requires OS-level access)
-- Add tests for real API interactions (with mocked providers)
-- Add visual regression tests
-- Add performance tests
+Windows desktop tests have been run locally. OS-level screen selection, multi-monitor/DPI behavior, signing/installers, and macOS/Linux native behavior require their own verification.

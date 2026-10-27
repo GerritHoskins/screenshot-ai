@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getLogger } from '@logging';
 import type { WorkspaceContext } from './workspace';
+import { isExcluded } from './policy';
 
 const logger = getLogger({ minLevel: 0 });
 
@@ -93,7 +94,7 @@ function shouldIncludeFile(
   }
 
   // File must not match any exclude pattern
-  if (excludePatterns.some(pattern => pattern.test(filePath))) {
+  if (isExcluded(filePath, excludePatterns)) {
     return false;
   }
 
@@ -111,6 +112,8 @@ function loadFile(
   const fullPath = path.join(workspaceRoot, filePath);
   
   try {
+    const relative = path.relative(fs.realpathSync(workspaceRoot), fs.realpathSync(fullPath));
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
     const stats = fs.statSync(fullPath);
     if (!stats.isFile()) {
       return null;

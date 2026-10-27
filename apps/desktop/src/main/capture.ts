@@ -6,9 +6,11 @@ import { execSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import { logError, logInfo, logWarn } from "@logging";
+import { hardenWindow, isTrustedIpcSender, isValidSelectionRect } from "@security/ipc-hardening";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const rendererDirectory = path.join(__dirname, "../renderer");
 
 export type SelectionRect = { x: number; y: number; w: number; h: number };
 
@@ -323,7 +325,6 @@ export async function captureScreenSelection(options: CaptureOptions = {}): Prom
             // Strategy 1: Check if source has display_id that matches target display
             if (source.display_id) {
               // Try exact match
-              const displayIdMatch = targetDisplay.id.toString() === source.display_id;
               
               // Also try matching with all displays to see if we can find a correlation
               const allDisplays = screen.getAllDisplays();
@@ -622,6 +623,7 @@ export async function captureScreenSelection(options: CaptureOptions = {}): Prom
     }
 
     const overlay = new BrowserWindow(overlayOptions);
+    hardenWindow(overlay, rendererDirectory, ["overlay.html"]);
 
     // In development, load from vite dev server; in production, load from file
     if (process.env.ELECTRON_RENDERER_URL) {
@@ -684,13 +686,16 @@ export async function captureScreenSelection(options: CaptureOptions = {}): Prom
 
     return new Promise((resolve) => {
       const cleanup = () => {
-        ipcMain.removeAllListeners("capture:selection");
-        ipcMain.removeAllListeners("capture:cancel");
+        ipcMain.removeListener("capture:selection", onSelection);
+        ipcMain.removeListener("capture:cancel", onCancel);
+        overlay.removeListener("closed", onClosed);
         if (!overlay.isDestroyed()) overlay.close();
       };
 
-      ipcMain.once("capture:selection", async (_event, rect: SelectionRect) => {
+      const onSelection = async (event: Electron.IpcMainEvent, rect: SelectionRect) => {
+        if (!isTrustedIpcSender(event, rendererDirectory, ["overlay.html"], overlay)) return;
         cleanup();
+        if (!isValidSelectionRect(rect)) { resolve(null); return; }
         if (rect.w < 2 || rect.h < 2) {
           resolve(null);
           return;
@@ -752,12 +757,16 @@ export async function captureScreenSelection(options: CaptureOptions = {}): Prom
           logError('capture', 'Failed to process selection', error instanceof Error ? error : undefined);
           resolve(null);
         }
-      });
-
-      ipcMain.once("capture:cancel", () => {
+      };
+      const onCancel = (event: Electron.IpcMainEvent) => {
+        if (!isTrustedIpcSender(event, rendererDirectory, ["overlay.html"], overlay)) return;
         cleanup();
         resolve(null);
-      });
+      };
+      const onClosed = () => { cleanup(); resolve(null); };
+      ipcMain.on("capture:selection", onSelection);
+      ipcMain.on("capture:cancel", onCancel);
+      overlay.once("closed", onClosed);
     });
   } catch (error) {
     logError('capture', 'Capture failed', error instanceof Error ? error : undefined);
@@ -782,6 +791,8 @@ async function chooseDisplay(displays: DisplayChoice[], sources: { thumbnail: El
       preload: path.join(__dirname, "../preload/chooser.js"), // Compiled path
     },
   });
+
+  hardenWindow(chooser, rendererDirectory, ["chooser.html"]);
 
   // In development, load from vite dev server; in production, load from file
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -808,25 +819,26 @@ async function chooseDisplay(displays: DisplayChoice[], sources: { thumbnail: El
 
   return new Promise((resolve) => {
     const cleanup = () => {
-      ipcMain.removeAllListeners("display:choose");
-      ipcMain.removeAllListeners("display:cancel");
+      ipcMain.removeListener("display:choose", onChoose);
+      ipcMain.removeListener("display:cancel", onCancel);
+      chooser.removeListener("closed", onClosed);
       if (!chooser.isDestroyed()) chooser.close();
     };
-
-    ipcMain.once("display:choose", (_event, index: number) => {
+    const onChoose = (event: Electron.IpcMainEvent, index: number) => {
+      if (!isTrustedIpcSender(event, rendererDirectory, ["chooser.html"], chooser)) return;
+      if (!Number.isInteger(index) || index < 0 || index >= displays.length) return;
       cleanup();
       resolve(index);
-    });
-
-    ipcMain.once("display:cancel", () => {
+    };
+    const onCancel = (event: Electron.IpcMainEvent) => {
+      if (!isTrustedIpcSender(event, rendererDirectory, ["chooser.html"], chooser)) return;
       cleanup();
       resolve(null);
-    });
-
-    chooser.on("closed", () => {
-      cleanup();
-      resolve(null);
-    });
+    };
+    const onClosed = () => { cleanup(); resolve(null); };
+    ipcMain.on("display:choose", onChoose);
+    ipcMain.on("display:cancel", onCancel);
+    chooser.once("closed", onClosed);
   });
 }
 
@@ -878,7 +890,7 @@ Write-Host "OK"
     logInfo('capture', 'PowerShell result', { result: result.trim() });
 
     // Clean up script file
-    try { fs.unlinkSync(tempScript); } catch {}
+    try { fs.unlinkSync(tempScript); } catch { /* Best-effort temporary-file cleanup. */ }
 
     // Read the captured image
     if (fs.existsSync(tempFile)) {
@@ -893,8 +905,8 @@ Write-Host "OK"
   } catch (error) {
     logError('capture', 'PowerShell capture failed', error instanceof Error ? error : undefined);
     // Clean up temp files
-    try { if (fs.existsSync(tempScript)) fs.unlinkSync(tempScript); } catch {}
-    try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch {}
+    try { if (fs.existsSync(tempScript)) fs.unlinkSync(tempScript); } catch { /* Best-effort temporary-file cleanup. */ }
+    try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch { /* Best-effort temporary-file cleanup. */ }
     return null;
   }
 }

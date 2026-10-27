@@ -1,104 +1,29 @@
-/**
- * Capture Flow E2E Tests - Workstream H.2
- * Tests the full capture flow: hotkey → selection → capture.
- */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { cleanup, launchApp, sendToRenderer, type TestApp } from './setup';
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { BrowserWindow, globalShortcut } from 'electron';
-import {
-  launchApp,
-  waitForWindowReady,
-  waitForElement,
-  getElementText,
-  cleanup,
-  executeInRenderer,
-} from './setup';
+describe('Built desktop capture UI', () => {
+  let app: TestApp;
+  beforeAll(async () => { app = await launchApp(); }, 30_000);
+  afterAll(async () => { if (app) await cleanup(app); });
 
-describe('Capture Flow', () => {
-  let mainWindow: BrowserWindow;
-
-  beforeEach(async () => {
-    // Clean up any existing windows
-    await cleanup();
-    
-    // Launch app
-    mainWindow = await launchApp();
-    await waitForWindowReady(mainWindow);
+  it('loads the production renderer and isolated preload bridge', async () => {
+    expect(app.page.url()).toMatch(/dist\/renderer\/index\.html$/);
+    expect(await app.page.locator('#capture-btn').isEnabled()).toBe(true);
+    expect(await app.page.locator('#run-again-btn').isDisabled()).toBe(true);
+    expect(await app.page.locator('#export-btn').isDisabled()).toBe(true);
+    expect(await app.page.evaluate(() => ({ require: typeof (window as any).require, capture: typeof window.api.capture.start })))
+      .toEqual({ require: 'undefined', capture: 'function' });
   });
 
-  afterEach(async () => {
-    await cleanup();
+  it('registers the global capture shortcut in the real main process', async () => {
+    expect(await app.application.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('CommandOrControl+Shift+S'))).toBe(true);
   });
 
-  it('should display initial UI state', async () => {
-    // Check that status element exists
-    await waitForElement(mainWindow, '#status');
-    
-    const statusText = await getElementText(mainWindow, '#status');
-    expect(statusText).toBeTruthy();
-  });
-
-  it('should have retry button disabled initially', async () => {
-    await waitForElement(mainWindow, '#retry');
-    
-    const isDisabled = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#retry')?.disabled || false"
-    );
-    
-    expect(isDisabled).toBe(true);
-  });
-
-  it('should have copy button disabled initially', async () => {
-    await waitForElement(mainWindow, '#copy');
-    
-    const isDisabled = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#copy')?.disabled || false"
-    );
-    
-    expect(isDisabled).toBe(true);
-  });
-
-  it('should register global hotkey', async () => {
-    // Note: Actual hotkey registration testing requires OS-level access
-    // This test verifies the hotkey handler exists
-    const hasHotkeyHandler = await executeInRenderer<boolean>(
-      mainWindow,
-      "typeof window.api?.analysis !== 'undefined'"
-    );
-    
-    expect(hasHotkeyHandler).toBe(true);
-  });
-
-  it('should display processing state when capture starts', async () => {
-    // Simulate capture start by triggering the IPC event
-    // In a real scenario, this would be triggered by the hotkey
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onProcessing) {
-        // The actual event is emitted from main process
-        // This test verifies the handler exists
-      }
-      `
-    );
-    
-    // Verify status element exists (will be updated by IPC)
-    await waitForElement(mainWindow, '#status');
-  });
-
-  it('should handle capture cancellation', async () => {
-    // This test verifies the UI can handle cancellation
-    // Actual cancellation would be tested with real capture flow
-    await waitForElement(mainWindow, '#status');
-    
-    // Verify UI is in a state that can handle cancellation
-    const statusExists = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#status') !== null"
-    );
-    
-    expect(statusExists).toBe(true);
+  it('receives capture state and cancellation through the preload IPC bridge', async () => {
+    await sendToRenderer(app, 'analysis:processing', { stage: 'capture' });
+    await app.page.waitForFunction(() => document.querySelector('#status-text')?.textContent?.includes('Capturing'));
+    await sendToRenderer(app, 'analysis:processing', { stage: 'cancelled' });
+    await app.page.waitForFunction(() => document.querySelector('#status-text')?.textContent === 'Ready');
+    expect(await app.page.locator('#screenshot-preview').getAttribute('class')).toContain('empty');
   });
 });

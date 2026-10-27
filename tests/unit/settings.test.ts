@@ -12,7 +12,6 @@ import {
 } from '../../src/settings/schema';
 import * as store from '../../src/settings/store';
 import * as fs from 'fs';
-import * as path from 'path';
 
 // Mock electron app
 vi.mock('electron', () => ({

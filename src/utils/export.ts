@@ -85,7 +85,7 @@ function formatAsCodeOnly(analysis: ScreenshotAnalysis): string {
   }
 
   return analysis.codeBlocks
-    .map((block, idx) => {
+    .map((block) => {
       const parts: string[] = [];
 
       if (block.language) {

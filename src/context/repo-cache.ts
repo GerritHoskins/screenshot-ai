@@ -5,10 +5,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { app } from 'electron';
 import { getLogger } from '@logging';
 import type { ContextSource } from '@settings/schema';
-import type { RepoContext } from './repo-fetcher';
+import type { RepoContext, FetchOptions } from './repo-fetcher';
 
 const logger = getLogger();
 
@@ -29,7 +30,7 @@ interface CacheMetadata {
   entries: Record<string, CacheEntry>;
 }
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const DEFAULT_TTL = 60 * 60 * 1000; // 1 hour
 const MAX_CACHE_SIZE = 50 * 1024 * 1024; // 50 MB
 
@@ -145,16 +146,19 @@ function saveCache(metadata: CacheMetadata): void {
 /**
  * Get cache key for a source.
  */
-function getCacheKey(source: ContextSource): string {
-  return source.id;
+export function getCacheKey(source: ContextSource, options: FetchOptions = {}): string {
+  return createHash('sha256').update(JSON.stringify({
+    source,
+    options: { ...options, excludePatterns: options.excludePatterns?.map(pattern => pattern.toString()) },
+  })).digest('hex');
 }
 
 /**
  * Get cached repository context.
  */
-export function getCachedContext(source: ContextSource, ttl: number = DEFAULT_TTL): RepoContext | null {
+export function getCachedContext(source: ContextSource, ttl: number = DEFAULT_TTL, options: FetchOptions = {}): RepoContext | null {
   const metadata = loadCache();
-  const key = getCacheKey(source);
+  const key = getCacheKey(source, options);
   const entry = metadata.entries[key];
 
   if (!entry) {
@@ -164,7 +168,7 @@ export function getCachedContext(source: ContextSource, ttl: number = DEFAULT_TT
   const now = Date.now();
 
   // Check if expired
-  if (entry.expiresAt <= now) {
+  if (entry.expiresAt <= now || entry.cachedAt + ttl <= now) {
     logger.debug('repo-cache', 'Cache entry expired', { sourceId: source.id });
     delete metadata.entries[key];
     saveCache(metadata);
@@ -187,10 +191,11 @@ export function setCachedContext(
   source: ContextSource,
   context: RepoContext,
   ttl: number = DEFAULT_TTL,
-  etag?: string
+  etag?: string,
+  options: FetchOptions = {}
 ): void {
   const metadata = loadCache();
-  const key = getCacheKey(source);
+  const key = getCacheKey(source, options);
   const now = Date.now();
 
   metadata.entries[key] = {
@@ -215,10 +220,9 @@ export function setCachedContext(
  */
 export function invalidateCache(source: ContextSource): void {
   const metadata = loadCache();
-  const key = getCacheKey(source);
-  
-  if (metadata.entries[key]) {
-    delete metadata.entries[key];
+  const keys = Object.keys(metadata.entries).filter(key => metadata.entries[key].sourceId === source.id);
+  if (keys.length) {
+    for (const key of keys) delete metadata.entries[key];
     saveCache(metadata);
     logger.debug('repo-cache', 'Cache invalidated', { sourceId: source.id });
   }

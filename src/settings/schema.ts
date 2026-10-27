@@ -18,6 +18,7 @@ export interface SettingsSchema {
   provider: {
     selectedProvider: 'openai' | 'anthropic';
     selectedModel?: string;
+    models?: Partial<Record<'openai' | 'anthropic', string>>;
   };
   credentials: {
     openai?: {
@@ -112,7 +113,9 @@ export function migrateSettings(data: any): SettingsSchema {
 
   // Current version
   if (data.version === SETTINGS_VERSION) {
-    return data as SettingsSchema;
+    // The desktop historically wrote version 2 while retaining the legacy
+    // provider string and top-level settings. Normalize that shape too.
+    return migrateFromLegacy(data);
   }
 
   // Migrate from version 1 to version 2 (add GitHub/GitLab support)
@@ -132,7 +135,7 @@ function migrateFromLegacy(data: any): SettingsSchema {
   let sources: ContextSource[] = [];
 
   // First, check if context.sources already exists (from newer code paths)
-  if (data.context?.sources && Array.isArray(data.context.sources) && data.context.sources.length > 0) {
+  if (Array.isArray(data.context?.sources)) {
     sources = data.context.sources;
   }
   // Otherwise, create sources from legacy workspaceRoot or context.workspaceRoot
@@ -156,9 +159,11 @@ function migrateFromLegacy(data: any): SettingsSchema {
 
   const migrated: SettingsSchema = {
     ...DEFAULT_SETTINGS,
+    credentials: data.credentials ?? {},
     provider: {
       selectedProvider: typeof data.provider === 'string' ? data.provider : (data.provider?.selectedProvider || 'openai'),
       selectedModel: typeof data.provider === 'object' ? data.provider?.selectedModel : data.model,
+      models: typeof data.provider === 'object' ? data.provider?.models : undefined,
     },
     context: {
       enabled: data.context?.enabled ?? data.workspaceContextEnabled ?? false,
@@ -169,7 +174,7 @@ function migrateFromLegacy(data: any): SettingsSchema {
       sources,
     },
     prompt: {
-      useCustom: data.promptEnabled ?? data.prompt?.useCustom ?? false,
+      useCustom: data.prompt?.useCustom ?? data.promptEnabled ?? false,
       customText: data.prompt?.customText,
     },
     advanced: {

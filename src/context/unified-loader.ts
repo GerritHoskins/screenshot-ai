@@ -6,11 +6,16 @@
 import { getLogger } from '@logging';
 import { getEnabledSources } from './sources';
 import { loadWorkspaceContext } from './workspace';
-import { loadRelevantFiles, formatFilesAsContext, type LoadedFile } from './file-loader';
+import { loadRelevantFiles, type LoadedFile } from './file-loader';
 import { fetchRepoContext, type RepoContext } from './repo-fetcher';
 import { getCachedContext, setCachedContext } from './repo-cache';
-import { wrapRepoError, formatRepoErrorForLog, type RepoError } from './repo-errors';
+import { wrapRepoError, formatRepoErrorForLog } from './repo-errors';
 import type { ContextSource } from '@settings/schema';
+import { getSettings } from '../settings/store';
+import { compileExclusions, getContextLoadOptions, isExcluded } from './policy';
+import { scanForSecrets } from './secret-scanner';
+import { createHash } from 'crypto';
+import { getRepoToken } from '../security/repo-auth';
 
 const logger = getLogger();
 
@@ -34,6 +39,7 @@ export interface UnifiedContext {
 }
 
 export interface LoadOptions {
+  workspaceRoot?: string;
   includeFileTree?: boolean;
   includeFileContents?: boolean;
   maxFileSize?: number;
@@ -43,7 +49,7 @@ export interface LoadOptions {
   cacheTTL?: number; // Cache TTL in milliseconds
 }
 
-const DEFAULT_OPTIONS: Required<LoadOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<LoadOptions, 'workspaceRoot'>> = {
   includeFileTree: true,
   includeFileContents: true,
   maxFileSize: 100 * 1024, // 100 KB per file
@@ -61,22 +67,26 @@ const DEFAULT_OPTIONS: Required<LoadOptions> = {
  * Load context from all enabled sources.
  */
 export async function loadUnifiedContext(options: Partial<LoadOptions> = {}): Promise<UnifiedContext> {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const settings = getSettings();
+  const policy = getContextLoadOptions(settings);
+  const opts = {
+    ...DEFAULT_OPTIONS,
+    ...policy,
+    ...options,
+    includeFileContents: policy.includeFileContents && options.includeFileContents !== false,
+    includeFileTree: policy.includeFileTree && options.includeFileTree !== false,
+    maxFiles: Math.max(0, Math.min(options.maxFiles ?? policy.maxFiles, policy.maxFiles)),
+    maxFileSize: Math.max(0, Math.min(options.maxFileSize ?? policy.maxFileSize, policy.maxFileSize)),
+    maxTotalSize: Math.max(0, Math.min(options.maxTotalSize ?? policy.maxTotalSize, policy.maxTotalSize)),
+    excludePatterns: [...policy.excludePatterns, ...(options.excludePatterns ?? [])],
+  };
   const sources = getEnabledSources();
-
-  console.log('[UnifiedLoader] Enabled sources:', sources.length);
-  sources.forEach((s, i) => {
-    console.log(`[UnifiedLoader] Source ${i}:`, {
-      id: s.id,
-      type: s.type,
-      enabled: s.enabled,
-      scopePath: (s.scope as any)?.path,
-    });
-  });
-
-  if (sources.length === 0) {
+  const legacyRoot = options.workspaceRoot ?? settings.context?.workspaceRoot;
+  if (settings.context?.sources === undefined && sources.length === 0 && legacyRoot) {
+    sources.push({ id: 'local-legacy', type: 'local', enabled: true, scope: { path: legacyRoot } });
+  }
+  if (!policy.enabled || (!opts.includeFileContents && !opts.includeFileTree) || sources.length === 0) {
     logger.debug('unified-loader', 'No enabled sources found');
-    console.log('[UnifiedLoader] No enabled sources, returning empty context');
     return {
       files: [],
       tree: [],
@@ -104,12 +114,12 @@ export async function loadUnifiedContext(options: Partial<LoadOptions> = {}): Pr
 
     try {
       const sourceOptions = {
-        includeFileTree: opts.includeFileTree,
-        includeFileContents: opts.includeFileContents,
+        includeFileTree: opts.includeFileTree && source.scope?.includeFileTree !== false,
+        includeFileContents: opts.includeFileContents && source.scope?.includeFileContents !== false,
         maxFileSize: opts.maxFileSize,
         maxTotalSize: remainingSize,
         maxFiles: remainingFiles,
-        excludePatterns: opts.excludePatterns,
+        excludePatterns: [...opts.excludePatterns, ...compileExclusions(source.scope?.excludes ?? [])],
       };
 
       let repoContext: RepoContext | null = null;
@@ -124,7 +134,8 @@ export async function loadUnifiedContext(options: Partial<LoadOptions> = {}): Pr
 
       if (repoContext) {
         // Convert repo files to loaded files
-        const loadedFiles: LoadedFile[] = repoContext.files.map(file => ({
+        const loadedFiles: LoadedFile[] = (sourceOptions.includeFileContents ? repoContext.files : [])
+          .filter(file => !isExcluded(file.path, sourceOptions.excludePatterns)).map(file => ({
           path: file.path,
           content: file.content,
           size: file.size,
@@ -133,7 +144,8 @@ export async function loadUnifiedContext(options: Partial<LoadOptions> = {}): Pr
         }));
 
         // Add tree entries
-        const treeEntries = repoContext.tree.map(entry => ({
+        const treeEntries = (sourceOptions.includeFileTree ? repoContext.tree : [])
+          .filter(entry => !isExcluded(entry.path, sourceOptions.excludePatterns)).map(entry => ({
           path: entry.path,
           type: entry.type,
         }));
@@ -166,7 +178,7 @@ export async function loadUnifiedContext(options: Partial<LoadOptions> = {}): Pr
         });
       }
     } catch (error) {
-      const repoError = error instanceof Error && 'code' in error ? error as RepoError : wrapRepoError(error, {
+      const repoError = wrapRepoError(error, {
         provider: source.type === 'github' ? 'github' : source.type === 'gitlab' ? 'gitlab' : undefined,
         operation: 'loadContext',
       });
@@ -210,7 +222,7 @@ async function loadLocalContext(
     excludePatterns?: RegExp[];
   }
 ): Promise<RepoContext | null> {
-  const scope = source.scope as any;
+  const scope = source.scope;
   const workspaceRoot = scope?.path;
 
   if (!workspaceRoot) {
@@ -219,21 +231,22 @@ async function loadLocalContext(
   }
 
   try {
-    const workspaceContext = await loadWorkspaceContext(workspaceRoot);
+    const workspaceContext = await loadWorkspaceContext(workspaceRoot, true);
     if (!workspaceContext) {
       return null;
     }
 
-    const loadedFiles = loadRelevantFiles(workspaceContext, {
+    const loadedFiles = options.includeFileContents ? loadRelevantFiles(workspaceContext, {
       maxFiles: options.maxFiles || 10,
       maxFileSize: options.maxFileSize || 100 * 1024,
       maxTotalSize: options.maxTotalSize || 500 * 1024,
       excludePatterns: options.excludePatterns,
-    });
+    }) : [];
 
-    const tree = options.includeFileTree ? workspaceContext.fileTree.map(entry => ({
+    const tree: RepoContext['tree'] = options.includeFileTree ? workspaceContext.fileTree
+      .filter(entry => !isExcluded(entry.path, options.excludePatterns ?? [])).map(entry => ({
       path: entry.path || '',
-      type: entry.type,
+      type: entry.type === 'directory' ? 'dir' : 'file',
       size: entry.size,
     })) : [];
 
@@ -281,8 +294,14 @@ async function loadRemoteContext(
   },
   cacheTTL: number
 ): Promise<RepoContext | null> {
-  // Check cache first
-  const cached = getCachedContext(source, cacheTTL);
+  // A cached private repository must never outlive local authentication consent.
+  const provider = source.type === 'github' ? 'github' : 'gitlab';
+  const token = await getRepoToken(provider, source.authRef);
+  if (!token) return null;
+  const fingerprint = createHash('sha256').update(token).digest('hex');
+  // Only this fingerprint enters cache identity; never persist the credential.
+  const cacheSource = { ...source, authRef: `${source.authRef ?? `${provider}:default`}#${fingerprint}` };
+  const cached = getCachedContext(cacheSource, cacheTTL, options);
   if (cached) {
     logger.debug('unified-loader', 'Using cached context', { sourceId: source.id });
     return cached;
@@ -290,10 +309,14 @@ async function loadRemoteContext(
 
   // Fetch from remote
   try {
-    const repoContext = await fetchRepoContext(source, options);
+    const repoContext = await fetchRepoContext(source, options, token);
+    // Disconnection or replacement while a request was pending revokes its result.
+    if (await getRepoToken(provider, source.authRef) !== token) return null;
     
     // Store in cache
-    setCachedContext(source, repoContext, cacheTTL);
+    if (!scanForSecrets(repoContext.files).hasSecrets) {
+      setCachedContext(cacheSource, repoContext, cacheTTL, undefined, options);
+    }
     
     return repoContext;
   } catch (error) {
@@ -310,12 +333,15 @@ async function loadRemoteContext(
  * Format unified context as text for prompts.
  */
 export function formatUnifiedContextAsText(context: UnifiedContext): string {
-  if (context.files.length === 0) {
+  if (context.files.length === 0 && context.tree.length === 0) {
     return '';
   }
 
   const parts: string[] = [];
   parts.push('## Workspace Context\n');
+  if (context.tree.length) {
+    parts.push('### File tree', ...context.tree.map(entry => `${entry.type}: ${entry.path}`));
+  }
   parts.push(`Loaded from ${context.stats.sources.length} source(s):\n`);
 
   for (const sourceStat of context.stats.sources) {

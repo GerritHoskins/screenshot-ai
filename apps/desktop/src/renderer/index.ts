@@ -1,7 +1,7 @@
-import type { AIResponse, ScreenshotAnalysis } from "@types/ai-response";
+import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
+import { escapeHtml, formatAnswer, normalizeSeverity } from "./utils/formatting";
 
 // Element references
-let statusBar: HTMLDivElement;
 let statusIcon: HTMLDivElement;
 let statusText: HTMLSpanElement;
 let confidenceBadge: HTMLDivElement;
@@ -29,11 +29,9 @@ let api: any;
 
 // State
 let lastResult: AIResponse<ScreenshotAnalysis> | null = null;
-let lastScreenshotDataUrl: string | null = null;
 let feedbackSubmitted: 'positive' | 'negative' | null = null;
-let currentState: 'idle' | 'capturing' | 'analyzing' | 'success' | 'error' = 'idle';
 let activeTab: string = 'issues';
-let sectionCopyData: Map<string, string> = new Map();
+const sectionCopyData: Map<string, string> = new Map();
 let allIssues: any[] = [];
 let filteredIssues: any[] = [];
 let filterSeverity: 'all' | 'high' | 'medium' | 'low' = 'all';
@@ -42,7 +40,6 @@ let allExpanded: boolean = false;
 
 // Initialize elements
 function initializeElements() {
-  statusBar = document.getElementById("status-bar") as HTMLDivElement;
   statusIcon = document.getElementById("status-icon") as HTMLDivElement;
   statusText = document.getElementById("status-text") as HTMLSpanElement;
   confidenceBadge = document.getElementById("confidence-badge") as HTMLDivElement;
@@ -85,7 +82,6 @@ function initializeElements() {
 
 // Update status bar
 function updateStatus(state: 'idle' | 'capturing' | 'analyzing' | 'success' | 'error', message?: string) {
-  currentState = state;
   
   // Update icon
   statusIcon.className = `status-icon ${state}`;
@@ -181,7 +177,6 @@ function setupTabs() {
 
 // Update screenshot preview
 function updateScreenshotPreview(dataUrl: string | null) {
-  lastScreenshotDataUrl = dataUrl;
   
   if (!dataUrl) {
     screenshotPreview.className = 'screenshot-preview empty';
@@ -195,7 +190,13 @@ function updateScreenshotPreview(dataUrl: string | null) {
   }
   
   screenshotPreview.className = 'screenshot-preview';
-  screenshotPreview.innerHTML = `<img src="${dataUrl}" alt="Screenshot" id="screenshot-img">`;
+  screenshotPreview.replaceChildren();
+  const previewImage = document.createElement('img');
+  if (!/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) return;
+  previewImage.src = dataUrl;
+  previewImage.alt = 'Screenshot';
+  previewImage.id = 'screenshot-img';
+  screenshotPreview.appendChild(previewImage);
   
   // Make image clickable to open in modal viewer
   const img = screenshotPreview.querySelector('#screenshot-img') as HTMLImageElement;
@@ -220,7 +221,7 @@ function updateScreenshotMetadata(metadata: any) {
     html += `<div class="metadata-item"><strong>Captured:</strong><span>${new Date(metadata.timestamp).toLocaleString()}</span></div>`;
   }
   if (metadata.width && metadata.height) {
-    html += `<div class="metadata-item"><strong>Dimensions:</strong><span>${metadata.width} × ${metadata.height}</span></div>`;
+    html += `<div class="metadata-item"><strong>Dimensions:</strong><span>${escapeHtml(metadata.width)} × ${escapeHtml(metadata.height)}</span></div>`;
   }
   if (metadata.size) {
     html += `<div class="metadata-item"><strong>Size:</strong><span>${formatBytes(metadata.size)}</span></div>`;
@@ -248,32 +249,10 @@ function showToast(message: string, type: 'success' | 'info' | 'error' = 'info')
   }, 3000);
 }
 
-// Utility: Escape HTML
-function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-// Utility: Format answer with markdown-style code blocks
-function formatAnswer(text: string): string {
-  let formatted = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const langLabel = lang ? `<div class="code-lang">${escapeHtml(lang)}</div>` : '';
-    return `<div class="code-block">${langLabel}<pre><code>${escapeHtml(code.trim())}</code></pre></div>`;
-  });
-  
-  formatted = formatted.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
-  formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  formatted = formatted.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  formatted = formatted.replace(/\n/g, '<br>');
-  
-  return formatted;
-}
-
 // Normalize issue data
 function normalizeIssue(issue: any): any {
   const type = issue.type || issue.category || 'Issue';
-  const severity = (issue.severity || 'medium').toLowerCase();
+  const severity = normalizeSeverity(issue?.severity);
   
   // Try to extract statement text from various possible fields
   let statement = issue.risk || issue.text || issue.message || issue.issue || issue.problem || issue.content;
@@ -339,10 +318,11 @@ function sortIssues(issues: any[]): any[] {
   const sorted = [...issues];
   
   switch (sortMode) {
-    case 'severity':
+    case 'severity': {
       const severityOrder = { high: 3, medium: 2, low: 1 };
       sorted.sort((a, b) => (severityOrder[b.severity as keyof typeof severityOrder] || 0) - (severityOrder[a.severity as keyof typeof severityOrder] || 0));
       break;
+    }
     case 'slide':
       sorted.sort((a, b) => {
         const slideA = parseInt(a.slide) || 0;
@@ -824,7 +804,7 @@ function renderSummaryTab(analysis: ScreenshotAnalysis) {
       
       // If still empty, try to stringify meaningful properties
       if (!summaryText) {
-        const entries = Object.entries(analysis.summary).filter(([k, v]) => 
+        const entries = Object.entries(analysis.summary).filter(([_k, v]) =>
           v !== null && v !== undefined && typeof v === 'string' && v.length > 0
         );
         if (entries.length > 0) {
@@ -950,7 +930,7 @@ function renderNotesTab(analysis: ScreenshotAnalysis) {
         
         // If still nothing, try to stringify meaningful properties
         if (!issue) {
-          const entries = Object.entries(item).filter(([k, v]) => 
+        const entries = Object.entries(item).filter(([k, v]) =>
             k !== 'area' && k !== 'category' && k !== 'suggestion' && k !== 'recommendation' &&
             v !== null && v !== undefined && typeof v === 'string' && v.length > 0
           );
@@ -1053,7 +1033,7 @@ function renderLogsTab() {
 
 // Export menu handlers
 function setupExportMenu() {
-  const exportBtn = document.getElementById('export-btn');
+  const exportBtn = document.getElementById('export-btn') as HTMLButtonElement | null;
   const exportDropdown = document.getElementById('export-menu-dropdown');
   
   if (!exportBtn || !exportDropdown) return;
@@ -1273,7 +1253,7 @@ function setupEventListeners() {
   });
 
   api.analysis.onResult((response: AIResponse<ScreenshotAnalysis>) => {
-    console.log('[Renderer] Received response:', response);
+
     
     lastResult = response;
 
@@ -1405,7 +1385,7 @@ function setupEventListeners() {
 // Setup feedback popover
 function setupFeedbackPopover() {
   const popover = document.getElementById('feedback-popover');
-  const submitBtn = document.getElementById('feedback-submit');
+  const submitBtn = document.getElementById('feedback-submit') as HTMLButtonElement | null;
   const otherTextarea = document.getElementById('feedback-other') as HTMLTextAreaElement;
   const options = popover?.querySelectorAll('.feedback-option');
   let selectedReason: string | null = null;
@@ -1432,12 +1412,6 @@ function setupFeedbackPopover() {
       feedbackPositiveBtn.disabled = true;
       feedbackNegativeBtn.disabled = true;
       submitBtn.disabled = true;
-      
-      const feedbackData = {
-        positive: false,
-        reason: selectedReason,
-        other: otherTextarea?.value || ''
-      };
       
       // TODO: Send structured feedback to API
       await api.analysis.submitFeedback(false);
@@ -1701,35 +1675,6 @@ function trapFocus(modal: HTMLElement) {
       }
     }
   });
-}
-
-// Highlight region for issue (Phase 4 - region linking)
-function highlightRegionForIssue(issueIndex: number) {
-  if (!lastResult?.success || !lastResult.data) return;
-  
-  const issue = filteredIssues[issueIndex];
-  if (!issue || !issue.raw) return;
-  
-  // Check if issue has region/bounding box data
-  const region = issue.raw.region || issue.raw.boundingBox || issue.raw.location;
-  if (!region) return;
-  
-  // Normalize region format
-  const normalizedRegion = {
-    x: region.x || region.left || 0,
-    y: region.y || region.top || 0,
-    width: region.width || (region.right - region.left) || 0,
-    height: region.height || (region.bottom - region.top) || 0
-  };
-  
-  highlightedRegions = [normalizedRegion];
-  
-  // Open viewer if not already open
-  if (lastScreenshotDataUrl && screenshotViewer.hidden) {
-    openScreenshotViewer(lastScreenshotDataUrl);
-  } else if (viewerImage) {
-    drawRegions();
-  }
 }
 
 // Setup keyboard shortcuts

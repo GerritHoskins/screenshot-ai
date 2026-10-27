@@ -3,15 +3,18 @@
  * Handles GitHub and GitLab authentication (PAT and OAuth)
  */
 
-import { createKeychainService } from './keychain';
+import { createKeychainService, type KeychainService } from './keychain';
 import { getLogger } from '@logging';
 
 // Lazy-load keychain service
-let keychainService: any = null;
+let keychainService: Promise<KeychainService> | null = null;
 
-async function getKeychainService(): Promise<any> {
+async function getKeychainService(): Promise<KeychainService> {
   if (!keychainService) {
-    keychainService = await createKeychainService();
+    keychainService = createKeychainService().catch(error => {
+      keychainService = null;
+      throw error;
+    });
   }
   return keychainService;
 }
@@ -49,11 +52,26 @@ export interface TokenValidationResult {
 // Keychain Account Names
 // ============================================================================
 
-function getKeychainAccount(provider: RepoProvider, username?: string): string {
-  if (username) {
+export function getKeychainAccount(provider: RepoProvider, username?: string): string {
+  if (provider !== 'github' && provider !== 'gitlab') throw new Error('Invalid repository provider');
+  if (!username) return `${provider}:default`;
+  if (username === `${provider}:default`) return username;
+  if (username.startsWith(`${provider}:user:`)) {
+    const accountName = username.slice(`${provider}:user:`.length);
+    if (accountName && !accountName.includes(':')) return username;
+  } else if (!username.includes(':')) {
     return `${provider}:user:${username}`;
   }
-  return `${provider}:default`;
+  throw new Error('Invalid repository authentication reference');
+}
+
+async function resolveStoredAccount(keychain: KeychainService, provider: RepoProvider, username?: string): Promise<string> {
+  const account = getKeychainAccount(provider, username);
+  if (account !== `${provider}:default` || await keychain.getPassword(SERVICE_NAME, account)) return account;
+  const accounts = (await keychain.findCredentials(SERVICE_NAME))
+    .filter(credential => credential.account.startsWith(`${provider}:user:`));
+  // Never silently select or delete one of several authenticated identities.
+  return accounts.length === 1 ? accounts[0].account : account;
 }
 
 // ============================================================================
@@ -89,8 +107,7 @@ export async function getRepoToken(
   username?: string
 ): Promise<string | null> {
   const keychain = await getKeychainService();
-  const account = getKeychainAccount(provider, username);
-  
+  const account = await resolveStoredAccount(keychain, provider, username);
   return keychain.getPassword(SERVICE_NAME, account);
 }
 
@@ -102,7 +119,7 @@ export async function deleteRepoToken(
   username?: string
 ): Promise<boolean> {
   const keychain = await getKeychainService();
-  const account = getKeychainAccount(provider, username);
+  const account = await resolveStoredAccount(keychain, provider, username);
   
   const deleted = await keychain.deletePassword(SERVICE_NAME, account);
   logger.info('repo-auth', 'Token deleted', { provider, account, deleted });

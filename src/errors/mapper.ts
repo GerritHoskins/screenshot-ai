@@ -3,7 +3,7 @@
  * Maps various error types to AIResponse format.
  */
 
-import type { AIResponse, AIError, AIErrorCode } from '../types/ai-response';
+import type { AIResponse, AIError } from '../types/ai-response';
 import { createErrorResponse, createAIError } from '../types/ai-response';
 import type { ResponseMetadata } from '../types/ai-response';
 
@@ -209,8 +209,6 @@ export class ErrorMapper {
       operation: 'screen_capture',
       ...context,
     };
-
-    const aiError = this.mapToAIError(error, fullContext);
 
     // Override for permission errors
     if (error instanceof Error && error.message.includes('permission')) {

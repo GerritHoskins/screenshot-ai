@@ -1,4 +1,4 @@
-import type { AIResponse, ScreenshotAnalysis } from "../types/ai-response";
+import type { AIResponse } from "../types/ai-response";
 import { mapConfidence, parseJsonFromText, type Provider, type ProviderConfig } from "./base";
 
 export class AnthropicProvider implements Provider {
@@ -97,7 +97,7 @@ function extractAnthropicText(response: any): string {
   return "";
 }
 
-function failure(code: string, message: string, started: number, model: string): AIResponse<ScreenshotAnalysis> {
+function failure(code: string, message: string, started: number, model: string): AIResponse<never> {
   return {
     success: false,
     error: { code, message, retryable: true },

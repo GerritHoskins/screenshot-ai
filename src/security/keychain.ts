@@ -53,7 +53,8 @@ export async function createKeychainService(): Promise<KeychainService> {
       } catch (importError) {
         throw new Error(
           `Failed to load keytar: require error: ${requireError instanceof Error ? requireError.message : String(requireError)}, ` +
-          `import error: ${importError instanceof Error ? importError.message : String(importError)}`
+          `import error: ${importError instanceof Error ? importError.message : String(importError)}`,
+          { cause: importError }
         );
       }
     }
@@ -115,11 +116,12 @@ export async function createKeychainService(): Promise<KeychainService> {
       throw new Error(
         'Keychain service unavailable. keytar module is required for secure API key storage. ' +
         'Please ensure keytar is properly installed and native dependencies are built for Electron. ' +
-        `Error: ${error instanceof Error ? error.message : String(error)}`
+        `Error: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
       );
     } else {
       // In development, allow mock fallback for testing
-      console.warn('keytar not available, using in-memory storage (DEV ONLY - NOT SECURE)', error);
+      console.warn('keytar not available, using in-memory storage (DEV ONLY - NOT SECURE)');
       return createMockKeychainService();
     }
   }
@@ -170,14 +172,17 @@ export function createMockKeychainService(): KeychainService {
 // API Key Management
 // ============================================================================
 
-let keychainService: KeychainService | null = null;
+let keychainService: Promise<KeychainService> | null = null;
 
 /**
  * Get or initialize the keychain service.
  */
 async function getKeychainService(): Promise<KeychainService> {
   if (!keychainService) {
-    keychainService = await createKeychainService();
+    keychainService = createKeychainService().catch(error => {
+      keychainService = null;
+      throw error;
+    });
   }
   return keychainService;
 }
@@ -186,6 +191,7 @@ async function getKeychainService(): Promise<KeychainService> {
  * Store an API key in the keychain.
  */
 export async function storeApiKey(provider: ProviderKey, apiKey: string): Promise<void> {
+  if (provider !== 'openai' && provider !== 'anthropic') throw new Error('Invalid provider');
   if (!apiKey || typeof apiKey !== 'string') {
     throw new Error('Invalid API key');
   }
@@ -214,11 +220,9 @@ export async function storeApiKey(provider: ProviderKey, apiKey: string): Promis
 export async function getApiKey(provider: ProviderKey): Promise<string | null> {
   // Validate provider is a valid string
   if (!provider || typeof provider !== 'string') {
-    console.error('[Keychain] Invalid provider:', provider);
     return null;
   }
   if (provider !== 'openai' && provider !== 'anthropic') {
-    console.error('[Keychain] Unknown provider:', provider);
     return null;
   }
 
@@ -230,6 +234,7 @@ export async function getApiKey(provider: ProviderKey): Promise<string | null> {
  * Delete an API key from the keychain.
  */
 export async function deleteApiKey(provider: ProviderKey): Promise<boolean> {
+  if (provider !== 'openai' && provider !== 'anthropic') throw new Error('Invalid provider');
   const keychain = await getKeychainService();
   return keychain.deletePassword(SERVICE_NAME, provider);
 }
@@ -248,7 +253,7 @@ export async function hasApiKey(provider: ProviderKey): Promise<boolean> {
 export async function listStoredProviders(): Promise<ProviderKey[]> {
   const keychain = await getKeychainService();
   const credentials = await keychain.findCredentials(SERVICE_NAME);
-  return credentials.map(c => c.account as ProviderKey);
+  return credentials.map(c => c.account).filter((account): account is ProviderKey => account === 'openai' || account === 'anthropic');
 }
 
 // ============================================================================

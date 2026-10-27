@@ -19,7 +19,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': rootSrc,
-        '@types': resolve(rootSrc, 'types'),
+        '@shared-types': resolve(rootSrc, 'types'),
         '@providers': resolve(rootSrc, 'providers'),
         '@security': resolve(rootSrc, 'security'),
         '@logging': resolve(rootSrc, 'logging'),
@@ -46,7 +46,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': rootSrc,
-        '@types': resolve(rootSrc, 'types'),
+        '@shared-types': resolve(rootSrc, 'types'),
       },
     },
   },
@@ -66,7 +66,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': rootSrc,
-        '@types': resolve(rootSrc, 'types'),
+        '@shared-types': resolve(rootSrc, 'types'),
         '@utils': resolve(rootSrc, 'utils'),
       },
     },

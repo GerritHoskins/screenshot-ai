@@ -1,272 +1,40 @@
-/**
- * Analysis Flow E2E Tests - Workstream H.2
- * Tests the analysis flow: screenshot → AI analysis → results display.
- */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { analysisResult, cleanup, launchApp, sendToRenderer, type TestApp } from './setup';
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { BrowserWindow } from 'electron';
-import {
-  launchApp,
-  waitForWindowReady,
-  waitForElement,
-  getElementText,
-  clickElement,
-  cleanup,
-  executeInRenderer,
-} from './setup';
+describe('Built desktop analysis rendering', () => {
+  let app: TestApp;
+  beforeAll(async () => { app = await launchApp(); }, 30_000);
+  afterAll(async () => { if (app) await cleanup(app); });
 
-describe('Analysis Flow', () => {
-  let mainWindow: BrowserWindow;
-
-  beforeEach(async () => {
-    await cleanup();
-    mainWindow = await launchApp();
-    await waitForWindowReady(mainWindow);
+  it('renders a real main-to-preload result and enables result actions', async () => {
+    await sendToRenderer(app, 'analysis:result', analysisResult());
+    await app.page.waitForFunction(() => document.querySelector('#content-summary')?.textContent?.includes('Test analysis result'));
+    expect(await app.page.locator('#run-again-btn').isEnabled()).toBe(true);
+    expect(await app.page.locator('#export-btn').isEnabled()).toBe(true);
+    await app.page.locator('#tab-raw').click();
+    expect(await app.page.locator('#content-raw').textContent()).toContain('fixture-model');
   });
 
-  afterEach(async () => {
-    await cleanup();
+  it('treats model HTML as inert text while retaining supported formatting', async () => {
+    const payload = '<img src=x onerror="window.__injected=1"> **safe bold**';
+    await sendToRenderer(app, 'analysis:result', analysisResult(payload));
+    await app.page.waitForFunction(() => document.querySelector('#content-summary')?.textContent?.includes('safe bold'));
+    expect(await app.page.locator('#content-summary img').count()).toBe(0);
+    expect(await app.page.locator('#content-summary strong').textContent()).toBe('safe bold');
+    expect(await app.page.evaluate(() => (window as any).__injected)).toBeUndefined();
+    expect(await app.page.locator('#content-summary').textContent()).toContain('<img');
   });
 
-  it('should display analysis results when received', async () => {
-    // Simulate receiving analysis results via IPC
-    const mockResult = {
-      success: true,
-      data: {
-        text: 'Test analysis result',
-        codeBlocks: [
-          {
-            language: 'typescript',
-            code: 'const test = "example";',
-          },
-        ],
-        confidence: 0.95,
-      },
-      metadata: {
-        model: 'gpt-4-vision-preview',
-        provider: 'openai',
-        promptTokens: 100,
-        completionTokens: 50,
-        latencyMs: 1500,
-        attemptNumber: 1,
-      },
-    };
-
-    // Trigger the result event handler
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onResult) {
-        // Simulate result event
-        const event = new CustomEvent('analysis:result', { detail: ${JSON.stringify(mockResult)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    // Wait for result element to appear
-    await waitForElement(mainWindow, '#result', 2000);
-
-    // Verify result content is displayed
-    const resultText = await getElementText(mainWindow, '#result');
-    expect(resultText).toContain('Test analysis result');
-  });
-
-  it('should enable retry button after analysis', async () => {
-    const mockResult = {
-      success: true,
-      data: { text: 'Test', confidence: 0.9 },
-      metadata: {
-        model: 'test',
-        provider: 'openai',
-        promptTokens: 0,
-        completionTokens: 0,
-        latencyMs: 100,
-        attemptNumber: 1,
-      },
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onResult) {
-        const event = new CustomEvent('analysis:result', { detail: ${JSON.stringify(mockResult)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#retry', 2000);
-
-    const isDisabled = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#retry')?.disabled || false"
-    );
-
-    expect(isDisabled).toBe(false);
-  });
-
-  it('should enable copy button after successful analysis', async () => {
-    const mockResult = {
-      success: true,
-      data: { text: 'Test', confidence: 0.9 },
-      metadata: {
-        model: 'test',
-        provider: 'openai',
-        promptTokens: 0,
-        completionTokens: 0,
-        latencyMs: 100,
-        attemptNumber: 1,
-      },
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onResult) {
-        const event = new CustomEvent('analysis:result', { detail: ${JSON.stringify(mockResult)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#copy', 2000);
-
-    const isDisabled = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#copy')?.disabled || false"
-    );
-
-    expect(isDisabled).toBe(false);
-  });
-
-  it('should display error message on analysis failure', async () => {
-    const mockError = {
-      code: 'NETWORK_ERROR',
-      message: 'Network request failed',
-      retryable: true,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#status', 2000);
-
-    const statusText = await getElementText(mainWindow, '#status');
-    expect(statusText.toLowerCase()).toContain('error');
-  });
-
-  it('should disable retry button for non-retryable errors', async () => {
-    const mockError = {
-      code: 'AUTH_ERROR',
-      message: 'Invalid API key',
-      retryable: false,
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onError) {
-        const event = new CustomEvent('analysis:error', { detail: ${JSON.stringify(mockError)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#retry', 2000);
-
-    const isDisabled = await executeInRenderer<boolean>(
-      mainWindow,
-      "document.querySelector('#retry')?.disabled || false"
-    );
-
-    expect(isDisabled).toBe(true);
-  });
-
-  it('should display code blocks when present', async () => {
-    const mockResult = {
-      success: true,
-      data: {
-        text: 'Code example',
-        codeBlocks: [
-          {
-            language: 'typescript',
-            code: 'const example = "test";',
-          },
-        ],
-        confidence: 0.9,
-      },
-      metadata: {
-        model: 'test',
-        provider: 'openai',
-        promptTokens: 0,
-        completionTokens: 0,
-        latencyMs: 100,
-        attemptNumber: 1,
-      },
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onResult) {
-        const event = new CustomEvent('analysis:result', { detail: ${JSON.stringify(mockResult)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#result', 2000);
-
-    const resultHtml = await executeInRenderer<string>(
-      mainWindow,
-      "document.querySelector('#result')?.innerHTML || ''"
-    );
-
-    expect(resultHtml).toContain('typescript');
-    expect(resultHtml).toContain('const example');
-  });
-
-  it('should handle retry button click', async () => {
-    // First, simulate a result
-    const mockResult = {
-      success: true,
-      data: { text: 'Test', confidence: 0.9 },
-      metadata: {
-        model: 'test',
-        provider: 'openai',
-        promptTokens: 0,
-        completionTokens: 0,
-        latencyMs: 100,
-        attemptNumber: 1,
-      },
-    };
-
-    await executeInRenderer<void>(
-      mainWindow,
-      `
-      if (window.api?.analysis?.onResult) {
-        const event = new CustomEvent('analysis:result', { detail: ${JSON.stringify(mockResult)} });
-        window.dispatchEvent(event);
-      }
-      `
-    );
-
-    await waitForElement(mainWindow, '#retry', 2000);
-
-    // Verify retry handler exists
-    const hasRetryHandler = await executeInRenderer<boolean>(
-      mainWindow,
-      "typeof window.api?.analysis?.retry === 'function'"
-    );
-
-    expect(hasRetryHandler).toBe(true);
+  it('enforces the production CSP against inline event handlers', async () => {
+    await app.page.evaluate(() => {
+      const image = document.createElement('img');
+      image.setAttribute('onerror', 'window.__cspBypass=1');
+      image.src = 'file:///nonexistent-screenshot-ai-csp-test.png';
+      document.body.append(image);
+      image.dispatchEvent(new Event('error'));
+      image.remove();
+    });
+    expect(await app.page.evaluate(() => (window as any).__cspBypass)).toBeUndefined();
+    expect(await app.page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')).toContain("script-src 'self'");
   });
 });

@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { FileTreeEntry } from '../../src/context/workspace';
 import type { LoadedFile } from '../../src/context/file-loader';
+import { compileExclusions, isExcluded } from '../../src/context/policy';
 
 describe('Exclusion Pattern Matching', () => {
   const testFiles = [
@@ -27,14 +28,7 @@ describe('Exclusion Pattern Matching', () => {
   ];
 
   function matchesPattern(filePath: string, pattern: string): boolean {
-    // Simple glob-like pattern matching
-    if (pattern.includes('*')) {
-      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-      return regex.test(filePath);
-    }
-    
-    // Exact match or directory match
-    return filePath === pattern || filePath.startsWith(pattern + '/') || filePath.includes('/' + pattern + '/');
+    return isExcluded(filePath, compileExclusions([pattern]));
   }
 
   it('should match exact file patterns', () => {
@@ -65,6 +59,45 @@ describe('Exclusion Pattern Matching', () => {
     
     expect(matches).toContain('secrets.json');
     expect(matches).toContain('config/secrets.yaml');
+  });
+
+  it('matches recursive directory globs at the root and at any nested depth', () => {
+    const patterns = compileExclusions(['**/private.json']);
+    for (const file of ['private.json', 'config/private.json', 'src/config/private.json']) {
+      expect(isExcluded(file, patterns)).toBe(true);
+    }
+    for (const file of ['private.json.backup', 'not-private.json', 'config/private-copy.json']) {
+      expect(isExcluded(file, patterns)).toBe(false);
+    }
+  });
+
+  it('lets an interior recursive directory glob match zero directories', () => {
+    const patterns = compileExclusions(['config/**/private.json']);
+    expect(isExcluded('config/private.json', patterns)).toBe(true);
+    expect(isExcluded('config/nested/private.json', patterns)).toBe(true);
+    expect(isExcluded('config-other/private.json', patterns)).toBe(false);
+  });
+
+  it('excludes recursive directories and contents without matching similarly named siblings', () => {
+    const patterns = compileExclusions(['**/private/**']);
+    for (const file of ['private', 'private/key.json', 'config/private', 'config/private/nested/key.json']) {
+      expect(isExcluded(file, patterns)).toBe(true);
+    }
+    expect(isExcluded('private-other/key.json', patterns)).toBe(false);
+    expect(isExcluded('config/private-copy/key.json', patterns)).toBe(false);
+    const scoped = compileExclusions(['private/**']);
+    expect(isExcluded('private', scoped)).toBe(true);
+    expect(isExcluded('private/key.json', scoped)).toBe(true);
+    expect(isExcluded('elsewhere/private/key.json', scoped)).toBe(false);
+  });
+
+  it('treats malformed regex-like glob text literally instead of throwing or widening exclusions', () => {
+    const patterns = compileExclusions(['private[.json', 'config(.json', '', '   ']);
+    expect(patterns).toHaveLength(2);
+    expect(isExcluded('private[.json', patterns)).toBe(true);
+    expect(isExcluded('config(.json', patterns)).toBe(true);
+    expect(isExcluded('private.json', patterns)).toBe(false);
+    expect(isExcluded('config.json', patterns)).toBe(false);
   });
 
   it('should exclude multiple patterns', () => {

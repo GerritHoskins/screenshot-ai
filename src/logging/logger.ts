@@ -3,10 +3,9 @@
  * Local file logging with rotation and redaction support.
  */
 
-import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
-import { redactSensitiveData } from '../security/redaction';
+import { redactLogValue, redactSensitiveData } from '../security/redaction';
 
 // ============================================================================
 // Log Levels
@@ -186,7 +185,7 @@ export class Logger {
       message = redactSensitiveData(message);
       if (entry.metadata) {
         try {
-          const redactedMeta = JSON.parse(redactSensitiveData(JSON.stringify(entry.metadata)));
+          const redactedMeta = redactLogValue(entry.metadata) as Record<string, unknown>;
           entry = { ...entry, metadata: redactedMeta };
         } catch {
           // If redaction produces non-JSON output, fall back to a string payload
@@ -205,7 +204,8 @@ export class Logger {
     }
 
     if (entry.error) {
-      line += `\n  Error: ${entry.error.name}: ${entry.error.message}`;
+      const safeMessage = this.config.redact ? redactSensitiveData(entry.error.message) : entry.error.message;
+      line += `\n  Error: ${entry.error.name}: ${safeMessage}`;
       if (entry.error.stack) {
         const stack = this.config.redact ? redactSensitiveData(entry.error.stack) : entry.error.stack;
         line += `\n  ${stack}`;
@@ -270,12 +270,14 @@ export class Logger {
     this.writeEntry(this.createEntry(LogLevel.INFO, component, message, metadata));
   }
 
-  warn(component: string, message: string, metadata?: Record<string, unknown>): void {
-    this.writeEntry(this.createEntry(LogLevel.WARN, component, message, metadata));
+  warn(component: string, message: string, details?: Record<string, unknown> | Error): void {
+    this.writeEntry(this.createEntry(LogLevel.WARN, component, message,
+      details instanceof Error ? undefined : details, details instanceof Error ? details : undefined));
   }
 
-  error(component: string, message: string, error?: Error, metadata?: Record<string, unknown>): void {
-    this.writeEntry(this.createEntry(LogLevel.ERROR, component, message, metadata, error));
+  error(component: string, message: string, details?: Error | Record<string, unknown>, metadata?: Record<string, unknown>): void {
+    this.writeEntry(this.createEntry(LogLevel.ERROR, component, message,
+      details instanceof Error ? metadata : details ?? metadata, details instanceof Error ? details : undefined));
   }
 
   /**
@@ -338,10 +340,10 @@ export function logInfo(component: string, message: string, metadata?: Record<st
   getLogger().info(component, message, metadata);
 }
 
-export function logWarn(component: string, message: string, metadata?: Record<string, unknown>): void {
-  getLogger().warn(component, message, metadata);
+export function logWarn(component: string, message: string, details?: Record<string, unknown> | Error): void {
+  getLogger().warn(component, message, details);
 }
 
-export function logError(component: string, message: string, error?: Error, metadata?: Record<string, unknown>): void {
-  getLogger().error(component, message, error, metadata);
+export function logError(component: string, message: string, details?: Error | Record<string, unknown>, metadata?: Record<string, unknown>): void {
+  getLogger().error(component, message, details, metadata);
 }

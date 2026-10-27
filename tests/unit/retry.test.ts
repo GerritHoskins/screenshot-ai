@@ -3,12 +3,11 @@
  * Tests for retry mechanisms and exponential backoff.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   calculateBackoffDelay,
   sleep,
   withRetry,
-  type RetryOptions,
 } from '../../src/providers/base';
 import { createAIError, createSuccessResponse, createErrorResponse } from '../../src/types/ai-response';
 import type { ResponseMetadata } from '../../src/types/ai-response';

@@ -5,8 +5,9 @@
 
 import { getLogger } from '@logging';
 import { getRepoToken } from '@security/repo-auth';
-import type { ContextSource, ContextSourceScope } from '@settings/schema';
-import { wrapRepoError, type RepoError } from './repo-errors';
+import type { ContextSource } from '@settings/schema';
+import { wrapRepoError } from './repo-errors';
+import { isExcluded } from './policy';
 
 const logger = getLogger();
 
@@ -70,8 +71,7 @@ async function fetchGitHubTree(
   path: string,
   token: string
 ): Promise<RepoTreeEntry[]> {
-  const pathParam = path ? `?path=${encodeURIComponent(path)}` : '';
-  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}${pathParam}?recursive=1`;
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
   
   let response: Response;
   try {
@@ -119,16 +119,17 @@ async function fetchGitHubTree(
     }
   }
 
-  return entries;
+  return entries.filter(entry => isWithinScope(entry.path, path));
 }
 
 async function fetchGitHubFile(
   owner: string,
   repo: string,
   path: string,
-  token: string
+  token: string,
+  ref: string
 ): Promise<{ content: string; sha: string; size: number }> {
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`;
   
   let response: Response;
   try {
@@ -183,7 +184,7 @@ async function getGitHubBranchSha(
   branch: string,
   token: string
 ): Promise<string> {
-  const url = `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${branch}`;
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`;
   
   let response: Response;
   try {
@@ -226,7 +227,7 @@ async function fetchGitLabTree(
   token: string
 ): Promise<RepoTreeEntry[]> {
   const pathParam = path ? `&path=${encodeURIComponent(path)}` : '';
-  const url = `https://gitlab.com/api/v4/projects/${encodeURIComponent(`${owner}/${repo}`)}/repository/tree?ref=${branch}&recursive=true${pathParam}`;
+  const url = `https://gitlab.com/api/v4/projects/${encodeURIComponent(`${owner}/${repo}`)}/repository/tree?ref=${encodeURIComponent(branch)}&recursive=true${pathParam}`;
   
   let response: Response;
   try {
@@ -280,7 +281,7 @@ async function fetchGitLabFile(
   branch: string,
   token: string
 ): Promise<{ content: string; size: number }> {
-  const url = `https://gitlab.com/api/v4/projects/${encodeURIComponent(`${owner}/${repo}`)}/repository/files/${encodeURIComponent(path)}/raw?ref=${branch}`;
+  const url = `https://gitlab.com/api/v4/projects/${encodeURIComponent(`${owner}/${repo}`)}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(branch)}`;
   
   let response: Response;
   try {
@@ -355,7 +356,12 @@ function detectLanguage(filePath: string): string | undefined {
 // ============================================================================
 
 function shouldIncludeFile(filePath: string, excludePatterns: RegExp[]): boolean {
-  return !excludePatterns.some(pattern => pattern.test(filePath));
+  return !isExcluded(filePath, excludePatterns);
+}
+
+function isWithinScope(filePath: string, pathScope: string = ''): boolean {
+  const scope = pathScope.replace(/^\/+|\/+$/g, '');
+  return !scope || filePath === scope || filePath.startsWith(`${scope}/`);
 }
 
 // ============================================================================
@@ -367,15 +373,16 @@ function shouldIncludeFile(filePath: string, excludePatterns: RegExp[]): boolean
  */
 export async function fetchRepoContext(
   source: ContextSource,
-  options: Partial<FetchOptions> = {}
+  options: Partial<FetchOptions> = {},
+  authToken?: string,
 ): Promise<RepoContext> {
   const opts = { ...DEFAULT_FETCH_OPTIONS, ...options };
   const scope = source.scope as any;
 
   if (source.type === 'github') {
-    return fetchGitHubContext(source, scope, opts);
+    return fetchGitHubContext(source, scope, opts, authToken);
   } else if (source.type === 'gitlab') {
-    return fetchGitLabContext(source, scope, opts);
+    return fetchGitLabContext(source, scope, opts, authToken);
   } else {
     throw wrapRepoError(new Error(`Unsupported source type: ${source.type}`), {
       operation: 'fetchRepoContext',
@@ -386,7 +393,8 @@ export async function fetchRepoContext(
 async function fetchGitHubContext(
   source: ContextSource,
   scope: any,
-  options: Required<FetchOptions>
+  options: Required<FetchOptions>,
+  authToken?: string,
 ): Promise<RepoContext> {
   const { owner, repo, defaultBranch = 'main', pathScope } = scope;
   const branch = defaultBranch;
@@ -400,7 +408,7 @@ async function fetchGitHubContext(
 
   // Get auth token
   const authRef = source.authRef || 'github:default';
-  const token = await getRepoToken('github', authRef);
+  const token = authToken ?? await getRepoToken('github', authRef);
   if (!token) {
     throw wrapRepoError(new Error('GitHub authentication token not found'), {
       provider: 'github',
@@ -417,9 +425,9 @@ async function fetchGitHubContext(
     const branchSha = await getGitHubBranchSha(owner, repo, branch, token);
 
     // Fetch tree
-    if (options.includeFileTree) {
+    if (options.includeFileTree || options.includeFileContents) {
       const treeEntries = await fetchGitHubTree(owner, repo, branchSha, pathScope || '', token);
-      tree.push(...treeEntries);
+      tree.push(...treeEntries.filter(entry => isWithinScope(entry.path, pathScope) && shouldIncludeFile(entry.path, options.excludePatterns)));
     }
 
     // Filter files by path scope and exclusions
@@ -437,7 +445,7 @@ async function fetchGitHubContext(
         if (totalSize >= options.maxTotalSize) break;
 
         try {
-          const fileData = await fetchGitHubFile(owner, repo, entry.path, token);
+          const fileData = await fetchGitHubFile(owner, repo, entry.path, token, branchSha);
           
           // Check size limits
           if (fileData.size > options.maxFileSize * 2) {
@@ -480,18 +488,6 @@ async function fetchGitHubContext(
           // Continue with other files
         }
       }
-    } else if (options.includeFileTree) {
-      // Just add file entries without content
-      for (const entry of fileEntries.slice(0, options.maxFiles)) {
-        files.push({
-          path: entry.path,
-          content: '',
-          size: entry.size || 0,
-          sha: entry.sha,
-          language: detectLanguage(entry.path),
-          truncated: false,
-        });
-      }
     }
 
     logger.info('repo-fetcher', 'Fetched GitHub context', {
@@ -505,7 +501,7 @@ async function fetchGitHubContext(
 
     return {
       files,
-      tree,
+      tree: options.includeFileTree ? tree : [],
       stats: {
         totalFiles: fileEntries.length,
         totalSize,
@@ -514,7 +510,7 @@ async function fetchGitHubContext(
       },
     };
   } catch (error) {
-    const repoError = error instanceof Error && 'code' in error ? error as RepoError : wrapRepoError(error, {
+    const repoError = wrapRepoError(error, {
       provider: 'github',
       operation: 'fetchGitHubContext',
     });
@@ -530,7 +526,8 @@ async function fetchGitHubContext(
 async function fetchGitLabContext(
   source: ContextSource,
   scope: any,
-  options: Required<FetchOptions>
+  options: Required<FetchOptions>,
+  authToken?: string,
 ): Promise<RepoContext> {
   const { owner, repo, defaultBranch = 'main', pathScope } = scope;
   const branch = defaultBranch;
@@ -544,7 +541,7 @@ async function fetchGitLabContext(
 
   // Get auth token
   const authRef = source.authRef || 'gitlab:default';
-  const token = await getRepoToken('gitlab', authRef);
+  const token = authToken ?? await getRepoToken('gitlab', authRef);
   if (!token) {
     throw wrapRepoError(new Error('GitLab authentication token not found'), {
       provider: 'gitlab',
@@ -558,9 +555,9 @@ async function fetchGitLabContext(
 
   try {
     // Fetch tree
-    if (options.includeFileTree) {
+    if (options.includeFileTree || options.includeFileContents) {
       const treeEntries = await fetchGitLabTree(owner, repo, branch, pathScope || '', token);
-      tree.push(...treeEntries);
+      tree.push(...treeEntries.filter(entry => isWithinScope(entry.path, pathScope) && shouldIncludeFile(entry.path, options.excludePatterns)));
     }
 
     // Filter files by path scope and exclusions
@@ -620,17 +617,6 @@ async function fetchGitLabContext(
           // Continue with other files
         }
       }
-    } else if (options.includeFileTree) {
-      // Just add file entries without content
-      for (const entry of fileEntries.slice(0, options.maxFiles)) {
-        files.push({
-          path: entry.path,
-          content: '',
-          size: entry.size || 0,
-          language: detectLanguage(entry.path),
-          truncated: false,
-        });
-      }
     }
 
     logger.info('repo-fetcher', 'Fetched GitLab context', {
@@ -644,7 +630,7 @@ async function fetchGitLabContext(
 
     return {
       files,
-      tree,
+      tree: options.includeFileTree ? tree : [],
       stats: {
         totalFiles: fileEntries.length,
         totalSize,
@@ -653,7 +639,7 @@ async function fetchGitLabContext(
       },
     };
   } catch (error) {
-    const repoError = error instanceof Error && 'code' in error ? error as RepoError : wrapRepoError(error, {
+    const repoError = wrapRepoError(error, {
       provider: 'gitlab',
       operation: 'fetchGitLabContext',
     });

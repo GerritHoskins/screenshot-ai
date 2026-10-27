@@ -113,9 +113,10 @@ describe('generateScreenshotAnalysisPrompt', () => {
   it('generates screenshot-specific prompt', () => {
     const prompt = generateScreenshotAnalysisPrompt();
 
-    expect(prompt).toContain('image analyst');
     expect(prompt).toContain('screenshot');
-    expect(prompt).toContain('text content');
+    expect(prompt).toContain('"answer"');
+    expect(prompt).toContain('"text"');
+    expect(prompt).toContain('valid JSON only');
     expect(prompt).toContain('codeBlocks');
     expect(prompt).toContain('confidence');
   });

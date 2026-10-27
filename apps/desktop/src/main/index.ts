@@ -3,15 +3,16 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { captureScreenSelection } from "./capture";
 import { getAnalysisService } from "./analysis";
-import type { AIResponse, ScreenshotAnalysis } from "@types/ai-response";
 import { getLogger } from "@logging";
 import { mapCaptureError, mapProviderError } from "@errors";
 import { registerSettingsHandlers } from "./settings";
 import * as fs from "fs";
+import { hardenWindow, isTrustedIpcSender, validateDesktopIpcArgs, SECURE_WEB_PREFERENCES } from "@security/ipc-hardening";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const rendererDirectory = path.join(__dirname, "../renderer");
 let mainWindow: BrowserWindow | null = null;
 let lastImage: Buffer | null = null;
 let isProcessing = false;
@@ -37,50 +38,11 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
-// Initialize analysis service (will be updated from settings)
-let analysisService = getAnalysisService({ provider: 'openai' });
-
-// Load provider and workspace settings from settings on startup
-function loadProviderFromSettings() {
-  try {
-    const settingsPath = path.join(app.getPath('userData'), 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      // Handle both old format (provider as string) and new schema format (provider as object)
-      const provider = typeof settings.provider === 'object' && settings.provider?.selectedProvider
-        ? settings.provider.selectedProvider
-        : settings.provider;
-      const model = typeof settings.provider === 'object' && settings.provider?.selectedModel
-        ? settings.provider.selectedModel
-        : settings.model;
-      // Handle workspace context from both old and new schema
-      const workspaceContextEnabled = settings.context?.enabled ?? settings.workspaceContextEnabled ?? true;
-      const workspaceRoot = settings.context?.workspaceRoot ?? settings.workspaceRoot;
-
-      if (provider) {
-        analysisService = getAnalysisService({
-          provider,
-          model,
-          workspaceContextEnabled: workspaceContextEnabled !== false,
-          workspaceRoot,
-        });
-        logger.info('main', 'Provider loaded from settings', {
-          provider,
-          model,
-          workspaceContextEnabled,
-        });
-      }
-    }
-  } catch (error) {
-    logger.warn('main', 'Failed to load provider from settings', error instanceof Error ? error : undefined);
-  }
-}
-
 /**
  * Load settings from file (helper function).
  * Normalizes both old and new schema formats to a consistent interface.
  */
-function loadSettingsFromFile(): { provider?: string; model?: string; workspaceContextEnabled?: boolean; workspaceRoot?: string } {
+function loadSettingsFromFile(): { provider?: 'openai' | 'anthropic'; model?: string; workspaceContextEnabled?: boolean; workspaceRoot?: string } {
   try {
     const settingsPath = path.join(app.getPath('userData'), 'settings.json');
     if (fs.existsSync(settingsPath)) {
@@ -96,7 +58,7 @@ function loadSettingsFromFile(): { provider?: string; model?: string; workspaceC
       const workspaceContextEnabled = raw.context?.enabled ?? raw.workspaceContextEnabled;
       const workspaceRoot = raw.context?.workspaceRoot ?? raw.workspaceRoot;
 
-      return { provider, model, workspaceContextEnabled, workspaceRoot };
+      return { provider: provider === 'anthropic' ? 'anthropic' : 'openai', model, workspaceContextEnabled, workspaceRoot };
     }
   } catch (error) {
     logger.warn('main', 'Failed to load settings', error instanceof Error ? error : undefined);
@@ -133,8 +95,6 @@ if (process.platform === 'win32') {
   app.commandLine.appendSwitch('enable-features', 'WinScreenCaptureKitMac');
   app.commandLine.appendSwitch('force-color-profile', 'srgb');
 
-  // Disable GPU sandbox which can interfere with screen capture
-  app.commandLine.appendSwitch('disable-gpu-sandbox');
 }
 
 logger.info('main', 'Application starting', { platform: process.platform });
@@ -144,11 +104,12 @@ async function createMainWindow() {
     width: 900,
     height: 650,
     webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
+      ...SECURE_WEB_PREFERENCES,
       preload: path.join(__dirname, "../preload/index.js")
     }
   });
+
+  hardenWindow(mainWindow, rendererDirectory);
 
   // In development, load from vite dev server; in production, load from file
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -165,6 +126,7 @@ async function runCapture() {
     return;
   }
 
+  isProcessing = true;
   try {
     // Step 1: Capture screenshot
     logger.info('main', 'Starting capture');
@@ -227,7 +189,7 @@ async function runCapture() {
     const currentService = getAnalysisService({
       provider: settings.provider || 'openai',
       model: settings.model,
-      workspaceContextEnabled: settings.workspaceContextEnabled !== false,
+      workspaceContextEnabled: settings.workspaceContextEnabled === true,
       workspaceRoot: settings.workspaceRoot,
     });
     const workspaceRoot = getWorkspaceRoot();
@@ -256,12 +218,6 @@ async function runCapture() {
 
     // Step 3: Send result or error
     if (response.success && response.data) {
-      console.log('[Main] Sending result to renderer:', {
-        success: response.success,
-        dataKeys: Object.keys(response.data),
-        hasText: !!response.data.text,
-        textPreview: response.data.text?.slice(0, 50),
-      });
       mainWindow?.webContents.send("analysis:result", response);
     } else {
       mainWindow?.webContents.send("analysis:error", {
@@ -295,10 +251,8 @@ app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 
 app.whenReady().then(async () => {
   // Register settings handlers
-  registerSettingsHandlers();
+  registerSettingsHandlers(rendererDirectory);
   
-  // Load provider from settings
-  loadProviderFromSettings();
 
   // Log user data + preload path to help diagnose missing logs/preload issues
   const userDataPath = app.getPath('userData');
@@ -327,7 +281,8 @@ app.on("will-quit", () => {
   globalShortcut.unregisterAll();
 });
 
-ipcMain.on("capture:start", async () => {
+ipcMain.on("capture:start", async (event, ...args) => {
+  if (!mainWindow || !isTrustedIpcSender(event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('capture:start', args)) return;
   logger.info('main', 'Capture button clicked');
   if (!isProcessing) {
     logger.info('main', 'Starting capture from button');
@@ -345,7 +300,8 @@ ipcMain.on("capture:start", async () => {
   }
 });
 
-ipcMain.on("analysis:retry", async () => {
+ipcMain.on("analysis:retry", async (event, ...args) => {
+  if (!mainWindow || !isTrustedIpcSender(event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('analysis:retry', args)) return;
   if (!lastImage || isProcessing) {
     logger.debug('main', 'Retry skipped', { hasImage: !!lastImage, isProcessing });
     return;
@@ -372,7 +328,7 @@ ipcMain.on("analysis:retry", async () => {
     const currentService = getAnalysisService({
       provider: settings.provider || 'openai',
       model: settings.model,
-      workspaceContextEnabled: settings.workspaceContextEnabled !== false,
+      workspaceContextEnabled: settings.workspaceContextEnabled === true,
       workspaceRoot: settings.workspaceRoot,
     });
     const workspaceRoot = getWorkspaceRoot();
@@ -422,6 +378,7 @@ ipcMain.on("analysis:retry", async () => {
 
 // Feedback handler
 ipcMain.handle("feedback:submit", async (_event, payload: { positive: boolean }) => {
+  if (!mainWindow || !isTrustedIpcSender(_event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('feedback:submit', [payload])) throw new Error('Invalid or untrusted IPC request');
   const feedback = payload.positive ? 'positive' : 'negative';
   lastFeedback = feedback;
   
@@ -448,6 +405,7 @@ ipcMain.handle(
     },
   ) => {
     try {
+      if (!mainWindow || !isTrustedIpcSender(event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('file:saveText', [params])) return { success: false, error: 'Invalid or untrusted IPC request' };
       if (!params?.content) {
         return { success: false, error: 'No content to save' };
       }
@@ -457,11 +415,12 @@ ipcMain.handle(
         ? path.join(app.getPath('documents'), params.defaultFileName)
         : undefined;
 
-      const saveResult = await dialog.showSaveDialog(ownerWindow, {
+      const saveOptions = {
         title: 'Export File',
         defaultPath,
         filters: params.filters,
-      });
+      };
+      const saveResult = ownerWindow ? await dialog.showSaveDialog(ownerWindow, saveOptions) : await dialog.showSaveDialog(saveOptions);
 
       if (saveResult.canceled || !saveResult.filePath) {
         return { success: false, cancelled: true };

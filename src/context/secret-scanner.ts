@@ -45,24 +45,29 @@ interface SecretPattern {
 }
 
 const SECRET_PATTERNS: SecretPattern[] = [
+  {
+    pattern: /\bsk-(?:proj-|ant-)?[a-zA-Z0-9_-]{20,}/,
+    severity: 'high',
+    description: 'Provider API key detected',
+  },
   // API Keys
   {
-    pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*['"]?([a-zA-Z0-9_\-]{20,})['"]?/i,
+    pattern: /(?:api[_-]?key|apikey)['"]?\s*[=:]\s*['"]?([a-zA-Z0-9_-]{20,})['"]?/i,
     severity: 'high',
     description: 'Potential API key detected',
   },
   {
-    pattern: /(?:secret|secret[_-]?key)\s*[=:]\s*['"]?([a-zA-Z0-9_\-]{20,})['"]?/i,
+    pattern: /(?:secret|secret[_-]?key)['"]?\s*[=:]\s*['"]?([a-zA-Z0-9_-]{20,})['"]?/i,
     severity: 'high',
     description: 'Potential secret key detected',
   },
   {
-    pattern: /(?:password|passwd|pwd)\s*[=:]\s*['"]?([^\s'"]{8,})['"]?/i,
+    pattern: /(?:password|passwd|pwd)['"]?\s*[=:]\s*['"]?([^\s'"]{8,})['"]?/i,
     severity: 'high',
     description: 'Potential password detected',
   },
   {
-    pattern: /(?:token|access[_-]?token)\s*[=:]\s*['"]?([a-zA-Z0-9_\-]{20,})['"]?/i,
+    pattern: /(?:token|access[_-]?token)['"]?\s*[=:]\s*['"]?([a-zA-Z0-9_-]{20,})['"]?/i,
     severity: 'high',
     description: 'Potential access token detected',
   },
@@ -74,21 +79,26 @@ const SECRET_PATTERNS: SecretPattern[] = [
     description: 'AWS Access Key ID detected',
   },
   {
-    pattern: /aws[_-]?secret[_-]?access[_-]?key\s*[=:]\s*['"]?([a-zA-Z0-9/+=]{40})['"]?/i,
+    pattern: /aws[_-]?secret[_-]?access[_-]?key['"]?\s*[=:]\s*['"]?([a-zA-Z0-9/+=]{40})['"]?/i,
     severity: 'high',
     description: 'AWS Secret Access Key detected',
   },
   
   // GitHub/GitLab tokens
   {
+    pattern: /\bgithub_pat_[a-zA-Z0-9_]{20,}/,
+    severity: 'high',
+    description: 'GitHub fine-grained personal access token detected',
+  },
+  {
     pattern: /ghp_[a-zA-Z0-9]{36}/,
     severity: 'high',
     description: 'GitHub Personal Access Token detected',
   },
   {
-    pattern: /gho_[a-zA-Z0-9]{36}/,
+    pattern: /gh[ousr]_[a-zA-Z0-9]{36}/,
     severity: 'high',
-    description: 'GitHub OAuth token detected',
+    description: 'GitHub OAuth or app token detected',
   },
   {
     pattern: /glpat-[a-zA-Z0-9_-]{20}/,
@@ -98,10 +108,9 @@ const SECRET_PATTERNS: SecretPattern[] = [
   
   // Private keys
   {
-    pattern: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/,
+    pattern: /-----BEGIN\s+(?:(?:RSA|EC|DSA|OPENSSH|ENCRYPTED)\s+)?PRIVATE\s+KEY-----/,
     severity: 'high',
     description: 'Private key detected',
-    filePattern: /\.(key|pem|p12|pfx)$/i,
   },
   
   // Environment files with sensitive patterns
@@ -112,21 +121,21 @@ const SECRET_PATTERNS: SecretPattern[] = [
     filePattern: /\.env$/,
   },
   {
-    pattern: /(?:db|database)[_-]?(?:password|passwd|pwd)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?/i,
+    pattern: /(?:db|database)[_-]?(?:password|passwd|pwd)['"]?\s*[=:]\s*['"]?([^\s'"]{4,})['"]?/i,
     severity: 'high',
     description: 'Database password detected',
   },
   
   // OAuth secrets
   {
-    pattern: /(?:oauth[_-]?)?client[_-]?secret\s*[=:]\s*['"]?([a-zA-Z0-9_\-]{20,})['"]?/i,
+    pattern: /(?:oauth[_-]?)?client[_-]?secret['"]?\s*[=:]\s*['"]?([a-zA-Z0-9_-]{20,})['"]?/i,
     severity: 'high',
     description: 'OAuth client secret detected',
   },
   
   // JWT secrets
   {
-    pattern: /jwt[_-]?secret\s*[=:]\s*['"]?([a-zA-Z0-9_\-]{20,})['"]?/i,
+    pattern: /jwt[_-]?secret['"]?\s*[=:]\s*['"]?([a-zA-Z0-9_-]{20,})['"]?/i,
     severity: 'high',
     description: 'JWT secret detected',
   },
@@ -140,7 +149,7 @@ const SECRET_PATTERNS: SecretPattern[] = [
   
   // Email addresses in config (might be sensitive)
   {
-    pattern: /(?:email|mail)\s*[=:]\s*['"]?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})['"]?/i,
+    pattern: /(?:email|mail)['"]?\s*[=:]\s*['"]?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})['"]?/i,
     severity: 'low',
     description: 'Email address in configuration',
   },
@@ -164,11 +173,6 @@ export function scanForSecrets(files: (LoadedFile | RepoFile)[]): ScanResult {
   const matches: SecretMatch[] = [];
 
   for (const file of files) {
-    // Skip if file is too large (might be false positives)
-    if (file.size > 500 * 1024) {
-      continue;
-    }
-
     const lines = file.content.split('\n');
     
     for (let lineNum = 0; lineNum < lines.length; lineNum++) {
@@ -184,17 +188,13 @@ export function scanForSecrets(files: (LoadedFile | RepoFile)[]): ScanResult {
         const match = pattern.pattern.exec(line);
         if (match) {
           // Extract matched content (truncate if too long)
-          const matchedContent = line.length > 100 
-            ? line.substring(0, 97) + '...' 
-            : line;
-          
           matches.push({
             file: file.path,
             line: lineNum + 1,
             pattern: pattern.pattern.source,
             severity: pattern.severity,
             description: pattern.description,
-            content: matchedContent.trim(),
+            content: '[REDACTED]',
           });
           
           // Only report first match per line

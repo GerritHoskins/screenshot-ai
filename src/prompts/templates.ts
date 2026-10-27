@@ -3,7 +3,6 @@
  * JSON-only prompt templates for AI interactions.
  */
 
-import type { ScreenshotAnalysis } from '../types/ai-response';
 
 // ============================================================================
 // Schema Definitions (for prompt injection)
@@ -173,7 +172,7 @@ export function generateScreenshotAnalysisRetryPrompt(
  */
 export function generateFeedbackBasedRetryPrompt(
   feedback: 'positive' | 'negative',
-  attemptNumber: number = 2
+  _attemptNumber: number = 2
 ): string {
   const baseTask = `Analyze the screenshot and extract text, code blocks, and structured data. Return as JSON matching the schema.`;
   
