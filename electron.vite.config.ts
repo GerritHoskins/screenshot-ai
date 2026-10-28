@@ -6,7 +6,7 @@ const outDir = resolve(__dirname, 'dist');
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['@gerrithoskins/screenshot-ai-core'] })],
     build: {
       outDir: resolve(outDir, 'main'),
       rollupOptions: {
@@ -32,7 +32,7 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['@gerrithoskins/screenshot-ai-core'] })],
     build: {
       outDir: resolve(outDir, 'preload'),
       rollupOptions: {

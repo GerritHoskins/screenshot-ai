@@ -1,0 +1,52 @@
+name: Publish Core to GitHub Packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-screenshot-ai-core
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: https://npm.pkg.github.com
+          scope: '@gerrithoskins'
+      - name: Install build tools without desktop lifecycle scripts
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:core
+      - run: npm run verify:core
+      - name: Pack and publish the validated core
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          package='@gerrithoskins/screenshot-ai-core'
+          version=$(node -p "require('./packages/core/package.json').version")
+          destination="$RUNNER_TEMP/core-release"
+          mkdir -p "$destination"
+          npm pack --workspace "$package" --ignore-scripts --pack-destination "$destination"
+          archive="$destination/gerrithoskins-screenshot-ai-core-$version.tgz"
+          npm publish "$archive" --registry=https://npm.pkg.github.com --access=public --ignore-scripts
+          npm view "$package@$version" name version dist.integrity --registry=https://npm.pkg.github.com
+          consumer="$RUNNER_TEMP/core-registry-consumer"
+          mkdir -p "$consumer"
+          cd "$consumer"
+          npm init -y
+          npm install "$package@$version" --registry=https://npm.pkg.github.com --ignore-scripts --no-audit --no-fund
+          node --input-type=module -e "import { analyzeImage } from '@gerrithoskins/screenshot-ai-core'; if (typeof analyzeImage !== 'function') throw new Error('Missing ESM API');"
+          node -e "const { analyzeImage } = require('@gerrithoskins/screenshot-ai-core'); if (typeof analyzeImage !== 'function') throw new Error('Missing CommonJS API');"

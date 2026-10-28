@@ -43,6 +43,9 @@ jobs:
       - name: Run TypeScript type check
         run: npm run typecheck
 
+      - name: Verify packed core consumers
+        run: npm run verify:core
+
   # ============================================================================
   # Unit Tests
   # ============================================================================

@@ -1,1 +1,3 @@
-export const retryPrompt = `The user downvoted your previous answer. Provide a different angle:\n- If prior answer focused on bugs, focus on UX/design critique.\n- If prior answer was high-level, provide concrete, actionable steps.\n- If it was verbose, shorten with bullet points.\nReturn JSON only.`;
+import { generateFeedbackBasedRetryPrompt } from '../prompts/templates.js';
+/** Legacy internal alias; retry instructions share the canonical prompt implementation. */
+export const retryPrompt = generateFeedbackBasedRetryPrompt('negative');

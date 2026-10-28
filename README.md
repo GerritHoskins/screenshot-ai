@@ -2,7 +2,7 @@
 
 An Electron desktop app that turns selected screenshots into AI answers, extracted text, code insights, and structured results using OpenAI or Anthropic.
 
-**Status: prototype, version 0.1.0.** Local security/privacy fixes and automated desktop regression tests are implemented. Installer signing, distribution, and cross-platform native capture still need verification. There is no React Native app or independently publishable core package yet. See the [audit and remediation](#repository-audit-2026-10-27).
+**Status: prototype, version 0.1.0.** Security/privacy fixes and desktop regression tests are implemented. The MIT-licensed [analysis core](packages/core/README.md) is a reusable package for React Native, browsers, and Node.js. Installer signing, distribution, and cross-platform native capture still need verification; a mobile UI is not implemented.
 
 ## What is implemented
 
@@ -42,8 +42,11 @@ The checked-in lockfile, `packageManager` declaration, and CI use npm. After ins
 | --- | --- |
 | `npm run dev` | Start Electron with the Vite development server |
 | `npm run build` | Compile main, preload, and renderer bundles into `dist/` |
+| `npm run build:core` | Build the shared library as ESM/CommonJS with declarations |
+| `npm run verify:core` | Pack and install the library in clean consumers; verify exports and types |
+| `npm run verify:core:react-native` | Install isolated native test tooling and check React Native types plus Android/iOS Metro bundles |
 | `npm run package` | Invoke electron-builder; configured installer output is `release/` |
-| `npm run lint` | Run ESLint on `src/` and `tests/` |
+| `npm run lint` | Run ESLint on root, desktop, core, tests, and configuration sources |
 | `npm run typecheck` | Run the current TypeScript configuration |
 | `npm run test:unit` | Run unit tests |
 | `npm run test:e2e` | Run the existing Electron test suites |
@@ -57,18 +60,18 @@ Run `npm run build` before `npm run package`; packaging does not build the app a
 apps/desktop/src/main       Electron lifecycle, capture, analysis, settings IPC
 apps/desktop/src/preload    Renderer-facing contextBridge APIs
 apps/desktop/src/renderer   HTML/CSS/TypeScript user interface
-src/providers              Active provider clients and retry/timeout helpers
+src/providers              Desktop Buffer adapters for shared provider clients
 src/context                Local and remote repository context loading/cache
 src/security               Active keytar integration, auth, security utilities
 src/settings               Versioned settings schema/store
-src/types                  Shared response types and runtime validation
-packages/core/src          Partial, separate analysis implementation
+src/types                  Compatibility exports of shared response types/validation
+packages/core/src          Canonical portable providers, analysis, prompts, types
 tests                      Unit tests and Electron test harness
 ```
 
-The active path is **capture → desktop AnalysisService → root `src/providers` → provider API → renderer**. `electron.vite.config.ts` maps the desktop aliases to root `src/`. The similar provider, prompt, type, logging, and credential files under `apps/desktop/src/` and `packages/core/src/` are not automatically the active implementation.
+The active path is **capture → desktop AnalysisService → root Buffer adapters → shared core provider → provider API → renderer**. The desktop service owns keychain access, repository context, and secret filtering. The shared package owns portable request, retry/cancellation, prompt, and response-validation logic. Compatibility modules delegate to that implementation.
 
-This is a single root package with app/core directories, not a configured package workspace. The partial core has a different response-normalization path and does not yet define the desktop application's shared public API.
+This is an npm workspace. The desktop root remains private; `@gerrithoskins/screenshot-ai-core` has an independent manifest, public exports, declaration builds, MIT license, and a strict package-file allowlist. Desktop bundles include the portable code, so distribution does not depend on a workspace symlink.
 
 ## Privacy and security
 
@@ -101,8 +104,9 @@ Local checks use Node.js `v26.3.0` and npm `11.1.0` on Windows. Approved depende
 | `npm run build` | Passed; emits main, preload, and all four renderer pages |
 | `npm run lint` | Passed with the checked-in ESLint flat configuration |
 | `npm run typecheck` | Passed; includes root, desktop, core, tests, and build/test configuration |
-| `npm test` | Builds first, then runs unit and actual Electron desktop tests |
-| `npm run test:coverage` | Builds and runs the suite with V8 coverage |
+| `npm test` | Passed: 238 tests across 22 files, including actual Electron desktop tests |
+| `npm run verify:core` | Passed: packed-library imports, strict declarations, contents allowlist, and React Native export |
+| `npm run test:coverage` | Available; full extraction coverage has not been rerun |
 | `npm audit` | Zero reported advisories after the upgrades |
 | `npm run postinstall` | Rebuilt native dependencies; desktop fixture also loads keytar as an ABI smoke check |
 
@@ -110,26 +114,26 @@ Unit regressions exercise the actual analysis/context/provider/IPC paths, includ
 
 The E2E harness uses Playwright to launch the built Electron app with a disposable profile under `.cache/e2e/`. It tests the real preload bridge, UI state, result/error rendering, settings persistence, rejection of invalid IPC inputs, and native CSP enforcement. It does not take screenshots of the user's desktop, call paid AI providers, or read/write real credentials. Native screen selection, DPI/multiple monitors, macOS/Linux behavior, and signing/installer behavior remain manual or cross-platform validation work. Coverage from the Node runner does not instrument the separate Electron processes.
 
-CI source now uses Node.js 24, runs Linux E2E under Xvfb, and enforces E2E and dependency audit failures. These workflow edits have not been pushed or executed on GitHub.
+The security baseline was pushed as `192f55b`. CI source uses Node.js 24, runs Linux E2E under Xvfb, and enforces E2E and dependency audit failures. The core extraction adds packed-consumer verification. Cross-platform CI and installer validation remain separate from the local checks above.
 
 ### Further improvements
 
 1. Verify native capture on Windows at different DPI settings and with multiple monitors, plus macOS permissions and Linux desktop behavior.
 2. Complete release engineering: the manifest still references an absent macOS entitlements file, and the installer artifact-upload paths still need reconciliation with the `release/` output directory. Signing, notarization, installer smoke tests, and updates remain unverified.
-3. Consolidate the remaining parallel provider, response, settings, and core implementations before making a public library contract.
+3. Continue simplifying desktop settings and platform adapters around the shared library contract.
 4. Complete Markdown file export and improve keyboard, focus, and screen-reader behavior.
 5. Consider explicit outgoing-context review, request-cost information, and opt-in history with retention/deletion controls.
 
-No package, installer, or GitHub release was published.
+Core package releases are independent of desktop installers and GitHub release assets.
 
 ## React Native feasibility
 
-**Yes: an Android/iOS version is feasible as a new client sharing a refactored TypeScript core.** This is an architectural assessment, not a verified mobile port. The current renderer uses DOM APIs and HTML/CSS rather than React; it must be rewritten with React Native components.
+**The shared analysis core is now extracted and consumable by React Native.** A mobile app still needs its own UI, image input, secure storage, and sharing adapters. The current desktop renderer uses DOM APIs and HTML/CSS rather than React Native components.
 
 | Area | Reuse or replacement |
 | --- | --- |
-| Prompts, response types, validation, retry policy | Reuse after consolidating the parallel implementations |
-| Provider request/response logic | Share through an injected transport; replace Node `Buffer` assumptions with a base64 image plus MIME type or a portable byte interface |
+| Prompts, response types, validation, retry policy | Shared in the extracted package |
+| Provider request/response logic | Shared through injectable fetch; portable input is base64 plus an explicit MIME type |
 | Electron windows, IPC, global shortcut, screen overlay | Replace with mobile navigation, explicit image input, and native integrations |
 | `sharp` processing and `keytar` | Replace with mobile image-processing and secure-storage adapters |
 | Filesystem/workspace context | Redesign around imported files or explicitly selected remote repositories; desktop paths do not transfer |
@@ -141,36 +145,50 @@ On Android, live device/app capture uses [MediaProjection](https://developer.and
 
 [React Native native modules](https://reactnative.dev/docs/native-platform) can bridge platform features. Never embed a shared provider secret in the mobile bundle: use an authenticated backend for app-owned credentials, or secure OS storage for user-supplied credentials, following the [React Native security guidance](https://reactnative.dev/docs/security).
 
-Suggested implementation sequence: stabilize/extract the core, prove one imported-image analysis on both platforms, add secure credentials and export, then add share integration and evaluate live capture on real devices. No percentage of code reuse or delivery estimate is established by this audit.
+The optional native verification command consumes the packed library with React Native 0.88.1 / Metro 0.87.2. It checks native fetch assignability and builds/runs mocked analysis in Android/iOS Metro bundles without Node globals. Strict declaration checking finds three errors in React Native's own baseline declarations; adding this core introduces none. Separate clean ESM/CommonJS consumers verify the package declarations without errors. No emulator/device or live provider was used.
 
-## npm and GitHub Packages feasibility
+Next, implement screenshot import and a results UI on both platforms, then secure credentials/export and share integration. System capture requires a separate native validation step.
 
-**Both registries are possible after package preparation; this checkout is not ready to publish.** The most useful registry artifact would be a reusable analysis core. Desktop installers should be distributed as tested release assets separately.
+## Reusable core and registries
 
-Current blockers:
+[Core package documentation](packages/core/README.md) includes the public API, React Native input/transport guidance, local tarball installation, and registry-specific release commands.
 
-- The root manifest has `private: true`, which [prevents npm publication](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#private).
-- `packages/core` has no manifest, public entry point, declaration build, or independent tests. It is not an installable package.
-- The root `main` starts an Electron application; there is no library `exports` contract or CLI `bin` entry. An npm install would also encounter the desktop `postinstall` script and native dependencies.
-- There is no top-level npm `files` allowlist or `.npmignore`. The nested `build.files` only configures electron-builder. The dry run included development/planning material as well as built output; a successful pack is not evidence of publish readiness.
-- No project license file or `license` field is present. The owner must choose the intended distribution/reuse terms before release.
-- Repository metadata, registry routing, authentication, versioning, and package-release workflows are not configured.
+```ts
+import { analyzeImage } from '@gerrithoskins/screenshot-ai-core';
 
-### Recommended package shape
+const result = await analyzeImage(
+  { base64: screenshotBase64, mimeType: 'image/png' },
+  { provider: 'openai', apiKey: userSuppliedApiKey, model: selectedVisionModel },
+);
+```
 
-Keep the desktop/root package private and prepare `packages/core` as a separate package, for example `@gerrithoskins/screenshot-ai-core`. This is a suggested name; npm namespace ownership and availability have not been checked.
+The library has zero runtime dependencies, ESM/CommonJS entry points, TypeScript declarations, a React Native export condition, and an MIT license scoped to the core package. Host applications supply image input, network transport, secure credentials, and context/privacy policy. The desktop root stays private and retains capture, keychain, repository loading, and UI responsibilities.
 
-Before publication, define its API and response schema, remove Electron/Node-only assumptions, emit JavaScript and declarations, declare `exports`/`types`, allowlist only distributable files, add license/repository metadata, and test the packed tarball in clean Node and React Native consumers. Keep desktop install/rebuild scripts out of the library.
+### Local verification
 
-| Destination | Requirements and intended use |
+Run sequentially because each package verification rebuilds its generated output:
+
+```sh
+npm run build:core
+npm run test:core
+npm run verify:core
+# Optional: downloads isolated RN/Metro tooling into .cache/.
+npm run verify:core:react-native
+```
+
+The package verifier installs the actual tarball outside this checkout and checks runtime imports, declarations, and the contents allowlist. Library packing never includes Electron/native dependencies, repository context, test fixtures, or development files.
+
+### npm and GitHub Packages
+
+The same scoped package can be directed to either registry. The manifest deliberately does not hardcode a registry, so publishing to one does not misroute the other.
+
+| Destination | Remaining release setup |
 | --- | --- |
-| npm registry | A publishable manifest, available name/authorized scope, authentication, and public access settings where appropriate. Use `--access public` explicitly for a public scoped release. See [npm publishing guidance](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/). |
-| GitHub Packages npm registry | A lowercase scoped name such as `@gerrithoskins/screenshot-ai-core`, `https://npm.pkg.github.com` registry routing, and repository association. Actions can publish with `GITHUB_TOKEN` and `packages: write`; consumers need registry/auth setup, including for public npm packages. See [GitHub registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry). |
-| GitHub Releases | Tested Windows/macOS installers produced by electron-builder; this is distinct from the GitHub Packages npm registry. |
+| npm registry | Confirm ownership/availability of the `@gerrithoskins` namespace and package name, configure authentication or trusted publishing, then make an explicitly authorized public release. See [npm publishing guidance](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/). |
+| GitHub Packages npm registry | Authenticate to `https://npm.pkg.github.com` with package-write permission. The lowercase scope and repository association are in the package manifest. Initial visibility is private; public visibility is a separate GitHub package setting. Consumers need scope mapping and package-read authentication. See [GitHub registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry). |
+| GitHub Releases | Desktop installers remain separate release assets; publishing the core does not distribute the Electron app. |
 
-The same scoped library/version can be released to both npm registries using explicit registry selection. Consumers must choose a registry mapping for the scope. A hardcoded GitHub `publishConfig.registry` should not accidentally route the npmjs release to GitHub. For npm CI publication, consider [trusted publishing with OIDC](https://docs.npmjs.com/trusted-publishers/); it has its own Node/npm and workflow requirements beyond the existing CI configuration.
-
-The release gate should include passing checks, a reviewed `npm pack --dry-run`, an installation test of the actual tarball, and explicit publication authorization. No package, installer, or GitHub release was published during this audit.
+Keep credentials in user/CI configuration. A registry scope mapping selects one registry for installation; use explicit registry selection for dual-registry releases. For npm CI releases, [trusted publishing with OIDC](https://docs.npmjs.com/trusted-publishers/) can avoid long-lived write tokens once configured by the owner. The manually triggered **Publish Core to GitHub Packages** workflow validates and publishes the checked-out core version using the repository's temporary `GITHUB_TOKEN`, then installs it from the registry to check both module formats. It does not publish to npm or create desktop releases.
 
 ## Suggested GitHub About metadata
 
@@ -180,6 +198,6 @@ The release gate should include passing checks, a reviewed `npm pack --dry-run`,
 
 **Topics:**
 
-`electron`, `typescript`, `screenshot`, `screen-capture`, `image-analysis`, `artificial-intelligence`, `openai`, `anthropic`, `desktop-app`, `developer-tools`
+`electron`, `typescript`, `screenshot`, `screen-capture`, `image-analysis`, `artificial-intelligence`, `openai`, `anthropic`, `desktop-app`, `developer-tools`, `react-native`, `npm-package`
 
-React Native and npm-library topics should be added when those deliverables exist. These suggestions have not been applied to the GitHub repository settings.
+These suggestions have not been applied to the GitHub repository settings.

@@ -4,21 +4,29 @@
   "private": true,
   "description": "AI-powered screenshot analysis tool",
   "main": "dist/main/index.js",
+  "workspaces": [
+    "packages/core"
+  ],
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "npm run build:core && electron-vite dev",
+    "build:core": "npm run build --workspace @gerrithoskins/screenshot-ai-core",
+    "verify:core": "npm run verify:package --workspace @gerrithoskins/screenshot-ai-core",
+    "verify:core:react-native": "node scripts/verify-core-react-native.cjs",
+    "build": "npm run build:core && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "rebuild": "electron-rebuild -f -w keytar",
     "package": "electron-builder",
     "lint": "eslint src apps packages tests *.config.*ts --ext .ts,.tsx,.mts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "npm run build:core && tsc --noEmit",
     "test": "npm run build && vitest run",
     "test:watch": "vitest",
     "test:coverage": "npm run build && vitest run --coverage",
-    "test:unit": "vitest run tests/unit",
+    "test:unit": "npm run build:core && vitest run tests/unit",
+    "test:core": "npm run build:core && vitest run core-package",
     "test:e2e": "npm run build && vitest run tests/e2e"
   },
   "dependencies": {
+    "@gerrithoskins/screenshot-ai-core": "0.1.0",
     "keytar": "^7.9.0",
     "sharp": "^0.35.5"
   },
