@@ -1,0 +1,10 @@
+{
+  "title": "Verifier",
+  "readonly": false,
+  "agent": {
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "mode": "auto-review",
+    "thinking": "medium"
+  }
+}
