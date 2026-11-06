@@ -15,7 +15,7 @@
     "build": "npm run build:core && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "rebuild": "electron-rebuild -f -w keytar",
-    "package": "electron-builder",
+    "package": "electron-builder --publish never",
     "lint": "eslint src apps packages tests *.config.*ts --ext .ts,.tsx,.mts",
     "typecheck": "npm run build:core && tsc --noEmit",
     "test": "npm run build && vitest run",

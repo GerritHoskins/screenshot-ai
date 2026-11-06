@@ -132,9 +132,10 @@ jobs:
         with:
           name: build-${{ matrix.os }}
           path: |
-            dist/*.dmg
-            dist/*.exe
-            dist/*.AppImage
+            release/*.dmg
+            release/*.exe
+            release/*-mac.zip
+          if-no-files-found: error
           retention-days: 7
 
   # ============================================================================
