@@ -1,2 +1,13 @@
 [extend]
 useDefault = true
+
+# Synthetic credential used to exercise secret blocking and redaction.
+# Match both the exact value and file so other credentials in tests and this
+# same value anywhere else remain subject to the default rules, including history.
+[[allowlists]]
+description = "Synthetic credential in context privacy regression tests"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^tests/unit/context-privacy\.test\.ts$''']
+regexes = ['''^1234567890abcdefghijklmnop$''']

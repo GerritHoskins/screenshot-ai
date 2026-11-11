@@ -60,6 +60,27 @@ describe('desktop IPC payload validation', () => {
     expect(validateDesktopIpcArgs('settings:setContextOptions', [{ includeFileContents: false, excludes: ['.env*'] }])).toBe(true);
   });
 
+  it('accepts only a boolean for agent access and no arguments for its other channels', () => {
+    expect(validateDesktopIpcArgs('settings:setMcpEnabled', [true])).toBe(true);
+    expect(validateDesktopIpcArgs('settings:setMcpEnabled', ['true'])).toBe(false);
+    expect(validateDesktopIpcArgs('settings:setMcpEnabled', [])).toBe(false);
+    for (const channel of ['settings:getMcpStatus', 'settings:copyMcpSetupCommand', 'settings:resetMcpToken']) {
+      expect(validateDesktopIpcArgs(channel, [])).toBe(true);
+      expect(validateDesktopIpcArgs(channel, ['extra'])).toBe(false);
+    }
+  });
+
+  it('accepts singleKeyShortcuts only as a boolean', () => {
+    expect(validateDesktopIpcArgs('settings:set', ['singleKeyShortcuts', false])).toBe(true);
+    expect(validateDesktopIpcArgs('settings:set', ['singleKeyShortcuts', true])).toBe(true);
+    for (const value of ['false', 0, 1, null, undefined, {}, []]) {
+      expect(validateDesktopIpcArgs('settings:set', ['singleKeyShortcuts', value])).toBe(false);
+    }
+    expect(validateDesktopIpcArgs('settings:set', ['singleKeyShortcuts'])).toBe(false);
+    expect(validateDesktopIpcArgs('settings:set', ['singleKeyShortcuts', true, true])).toBe(false);
+    expect(validateDesktopIpcArgs('settings:get', ['singleKeyShortcuts'])).toBe(true);
+  });
+
   it('rejects unsafe export paths and invalid filters but accepts plain filenames', () => {
     expect(validateDesktopIpcArgs('file:saveText', [{ content: 'ok', defaultFileName: '../secrets.json' }])).toBe(false);
     expect(validateDesktopIpcArgs('file:saveText', [{ content: 'ok', defaultFileName: 'C:\\other.json' }])).toBe(false);
@@ -71,6 +92,30 @@ describe('desktop IPC payload validation', () => {
     expect(validateDesktopIpcArgs('settings:addContextSource', [{ type: 'github', enabled: true, scope: { owner: 'owner', repo: 'repo', includeFileContents: false }, authRef: 'github:user:owner' }])).toBe(true);
     expect(validateDesktopIpcArgs('settings:addContextSource', [{ type: 'github', enabled: true, scope: { owner: 'owner', constructor: 'bad' } }])).toBe(false);
     expect(validateDesktopIpcArgs('settings:pollOAuthToken', ['github', 'code', -1])).toBe(false);
+  });
+
+  it('accepts analysis:cancel only without arguments', () => {
+    expect(validateDesktopIpcArgs('analysis:cancel', [])).toBe(true);
+    expect(validateDesktopIpcArgs('analysis:cancel', ['now'])).toBe(false);
+    expect(validateDesktopIpcArgs('analysis:cancel', [{}])).toBe(false);
+  });
+
+  it('validates feedback reasons and comments strictly while keeping the positive-only shape', () => {
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: true }])).toBe(true);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false }])).toBe(true);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, reason: 'too-verbose' }])).toBe(true);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, reason: 'other', comment: 'x'.repeat(500) }])).toBe(true);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, comment: '' }])).toBe(true);
+
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, reason: 'rude' }])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, reason: null }])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, comment: 'x'.repeat(501) }])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, comment: 42 }])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: false, comment: 'a\0b' }])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: 'no' }])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: true, extra: 1 }])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [{ positive: true }, 'second'])).toBe(false);
+    expect(validateDesktopIpcArgs('feedback:submit', [JSON.parse('{"positive":true,"__proto__":{}}')])).toBe(false);
   });
 
   it('accepts finite integer selection bounds and rejects malformed rectangles', () => {

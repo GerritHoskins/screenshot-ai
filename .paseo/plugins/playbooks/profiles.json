@@ -1,0 +1,60 @@
+{
+  "captured_on": "2026-11-06",
+  "source": "Local Paseo daemon profile settings; notes summarized for selection.",
+  "profiles": [
+    {
+      "id": "agent_profile_mvxuj3pe_nzb9982grap",
+      "name": "Coordinator",
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "modeId": "auto",
+      "thinkingOptionId": "high",
+      "notes": "Lead for planning, decomposition, delegation, dependency management and integration. Prefer delegating implementation."
+    },
+    {
+      "id": "agent_profile_mvxujypl_l3qu8yhim79",
+      "name": "Implementer A",
+      "provider": "codex",
+      "model": "gpt-6-astra",
+      "modeId": "auto-review",
+      "thinkingOptionId": "medium",
+      "notes": "Primary implementation for scoped features, fixes, refactoring and tests; report evidence and blockers."
+    },
+    {
+      "id": "agent_profile_mvxukk4q_bai4majj0aq",
+      "name": "Implementer B",
+      "provider": "codex",
+      "model": "gpt-6-astra",
+      "modeId": "auto-review",
+      "thinkingOptionId": "high",
+      "notes": "Complex coding or independent workstreams; coordinate ownership and include tests."
+    },
+    {
+      "id": "agent_profile_mvxulhrw_e1iefdn91j8",
+      "name": "Reviewer",
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "modeId": "auto",
+      "thinkingOptionId": "high",
+      "notes": "Independent correctness, regression, security, maintainability and test-coverage review. Do not modify implementation."
+    },
+    {
+      "id": "agent_profile_mvyxw169_p4pngnd9nak",
+      "name": "Second Opinion",
+      "provider": "codex",
+      "model": "gpt-6-astra",
+      "modeId": "auto-review",
+      "thinkingOptionId": "xhigh",
+      "notes": "Selective advisory review for disputed choices, unresolved bugs and critical findings; independent, no implementation."
+    },
+    {
+      "id": "agent_profile_mvz7z2gb_1z0gzuxt2iy",
+      "name": "UI & Accessibility Specialist",
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "modeId": "auto",
+      "thinkingOptionId": "high",
+      "notes": "Review component states, layout, keyboard/focus, overlays, screen-reader labels and applicable Storybook coverage."
+    }
+  ]
+}

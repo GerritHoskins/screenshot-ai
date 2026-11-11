@@ -61,6 +61,11 @@ export interface SettingsSchema {
     temperature?: number;
     timeout?: number;
   };
+  /** Local MCP server for agents (off by default; read at startup). */
+  mcp?: {
+    enabled?: boolean;
+    port?: number;
+  };
 }
 
 // ============================================================================

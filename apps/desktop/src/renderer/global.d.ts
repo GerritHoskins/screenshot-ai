@@ -4,6 +4,15 @@
 
 import type { ExposedAPI } from '../preload/index';
 
+export type {
+  ExposedAPI,
+  FeedbackReason,
+  FeedbackDetails,
+  AnalysisProcessingPayload,
+  AnalysisErrorPayload,
+  McpStatus,
+} from '../preload/index';
+
 declare global {
   interface Window {
     api: ExposedAPI;
@@ -20,4 +29,3 @@ declare global {
   }
 }
 
-export {};

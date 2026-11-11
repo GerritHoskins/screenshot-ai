@@ -1,0 +1,288 @@
+{
+  "title": "Implement and open draft PR",
+  "description": "screenshot-ai: one scoped task, human scope/plan approval, offline/live verification, independent review and final human acceptance. Read POLICY.md and PROJECT.md before starting.",
+  "concurrency": 1,
+  "inputs": {
+    "request": {
+      "type": "string",
+      "description": "One bounded request; provide this and/or task_file",
+      "default": ""
+    },
+    "task_file": {
+      "type": "string",
+      "description": "Optional repository-relative work-package file",
+      "default": ""
+    },
+    "base_branch": {
+      "type": "string",
+      "description": "Explicit destination branch for the draft PR; verify the launch/worktree base",
+      "required": true
+    }
+  },
+  "outputs": {
+    "result": {
+      "type": "string",
+      "value": "{{ steps.publish.outputs.publication_url }}"
+    },
+    "summary": {
+      "type": "string",
+      "value": "{{ steps.publish.outputs.publication_summary }}"
+    }
+  },
+  "steps": [
+    {
+      "id": "approve_scope",
+      "gate": "Approve the investigation scope. Manager: show the request/task file, actual repository/workspace and isolation, intended base, profile mapping and read-only/offline boundaries. Do not investigate product source until the human approves."
+    },
+    {
+      "id": "investigate",
+      "role": "investigator",
+      "needs": [
+        "approve_scope"
+      ],
+      "inputs": [
+        "request",
+        "task_file",
+        "base_branch"
+      ],
+      "outputs": {
+        "plan": {
+          "type": "string"
+        },
+        "scope_summary": {
+          "type": "string"
+        },
+        "baseline_summary": {
+          "type": "string"
+        }
+      },
+      "prompt": "Investigate one bounded task. Request: {{ inputs.request }}\nTask file: {{ inputs.task_file }}\nRun: {{ run.id }}\nPR base: {{ inputs.base_branch }}\nUse this project's PROJECT.md and capture evidence for a concrete plan approval.",
+      "timeout": "40m",
+      "outcomes": [
+        "planned",
+        "blocked",
+        "failure"
+      ],
+      "on": {
+        "blocked": "fail"
+      }
+    },
+    {
+      "id": "approve_plan",
+      "needs": [
+        "investigate"
+      ],
+      "gate": "Approve the exact plan and file scope. Manager: show the investigator's scope, commands, baseline failures and risks in gate details. Require an explicit comment naming every accepted baseline-failure check id; an ordinary approval with no exceptions accepts none.",
+      "choices": {
+        "approved": {
+          "label": "Approve this plan",
+          "comment": "optional"
+        },
+        "rejected": {
+          "label": "Revise investigation/plan",
+          "comment": "required"
+        },
+        "stop": {
+          "label": "Stop",
+          "comment": "optional"
+        }
+      },
+      "on": {
+        "rejected": {
+          "goto": "investigate",
+          "max_loops": 3
+        },
+        "stop": "fail"
+      }
+    },
+    {
+      "id": "implement",
+      "role": "implementer",
+      "needs": [
+        "approve_plan"
+      ],
+      "inputs": [
+        "plan"
+      ],
+      "outputs": {
+        "changes": {
+          "type": "string"
+        },
+        "implementation_evidence": {
+          "type": "string"
+        },
+        "remaining_risks": {
+          "type": "string"
+        }
+      },
+      "prompt": "Implement the approved plan, preserving the original baseline. Plan JSON: {{ inputs.plan }}\nRun: {{ run.id }}. Manager: include the exact human plan approval, accepted exception ids and any review feedback in your brief. If missing, stop.",
+      "timeout": "2h",
+      "outcomes": [
+        "implemented",
+        "needs_permission",
+        "blocked",
+        "failure"
+      ],
+      "on": {
+        "needs_permission": {
+          "ask": "Implementation needs an exact live/environment permission. Show the step report. Approval is limited to the stated operation.",
+          "goto": "implement",
+          "max_loops": 2,
+          "choices": {
+            "approved": {
+              "label": "Approve exact operation",
+              "comment": "required"
+            },
+            "declined": {
+              "label": "Decline; leave required check incomplete",
+              "comment": "optional"
+            }
+          }
+        },
+        "blocked": "fail"
+      }
+    },
+    {
+      "id": "verify",
+      "role": "verifier",
+      "needs": [
+        "implement"
+      ],
+      "inputs": [
+        "plan",
+        "changes",
+        "implementation_evidence"
+      ],
+      "outputs": {
+        "verification": {
+          "type": "string"
+        },
+        "verification_summary": {
+          "type": "string"
+        },
+        "verification_status": {
+          "type": "enum",
+          "values": [
+            "passed",
+            "accepted_baseline_failures",
+            "blocked"
+          ]
+        }
+      },
+      "prompt": "Verify the approved task independently. Plan: {{ inputs.plan }}\nChanges: {{ inputs.changes }}\nImplementation evidence: {{ inputs.implementation_evidence }}\nRun: {{ run.id }}. Record exact results, including failed or unrun required checks.",
+      "timeout": "90m",
+      "outcomes": [
+        "checked",
+        "needs_live",
+        "failure"
+      ],
+      "on": {
+        "needs_live": {
+          "ask": "Required live verification needs permission. Manager: show exact commands, data/destination/device, cost, duration and cleanup. Declining leaves that required check incomplete.",
+          "goto": "verify",
+          "max_loops": 2,
+          "choices": {
+            "approved": {
+              "label": "Approve exact operation",
+              "comment": "required"
+            },
+            "declined": {
+              "label": "Decline; leave required check incomplete",
+              "comment": "optional"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "review",
+      "role": "reviewer",
+      "needs": [
+        "verify"
+      ],
+      "inputs": [
+        "plan",
+        "changes",
+        "implementation_evidence",
+        "verification",
+        "verification_summary",
+        "verification_status"
+      ],
+      "outputs": {
+        "review_summary": {
+          "type": "string"
+        },
+        "review_evidence": {
+          "type": "string"
+        }
+      },
+      "prompt": "Review the actual implementation and evidence. Plan: {{ inputs.plan }}\nChanges: {{ inputs.changes }}\nImplementation evidence: {{ inputs.implementation_evidence }}\nVerification: {{ inputs.verification }}\nStatus: {{ inputs.verification_status }}\nSummary: {{ inputs.verification_summary }}\nRun: {{ run.id }}. Approve only after the source/evidence guard seals successfully.",
+      "timeout": "45m",
+      "outcomes": [
+        "approved",
+        "changes_required",
+        "blocked",
+        "failure"
+      ],
+      "on": {
+        "changes_required": {
+          "goto": "implement",
+          "max_loops": 2
+        },
+        "blocked": "fail"
+      }
+    },
+    {
+      "id": "publish",
+      "role": "publisher",
+      "needs": [
+        "review"
+      ],
+      "inputs": [
+        "plan",
+        "verification",
+        "review_summary",
+        "review_evidence",
+        "base_branch"
+      ],
+      "outputs": {
+        "publication_url": {
+          "type": "string"
+        },
+        "publication_summary": {
+          "type": "string"
+        }
+      },
+      "prompt": "Plan: {{ inputs.plan }}\nVerification: {{ inputs.verification }}\nReview: {{ inputs.review_summary }}\nReview evidence: {{ inputs.review_evidence }}\nPR base: {{ inputs.base_branch }}\nVerify exact staged/committed bytes, push only the reviewed task branch, and create or reuse its draft PR.\nRun: {{ run.id }}. Report partial publication accurately; never retry blindly.",
+      "timeout": "30m",
+      "outcomes": [
+        "published",
+        "blocked",
+        "failure"
+      ],
+      "on": {
+        "blocked": "fail"
+      }
+    },
+    {
+      "id": "final_review",
+      "needs": [
+        "publish"
+      ],
+      "gate": "Review the draft PR, exact commit, checks and known limits. Approval accepts this task only; it does not merge, deploy, publish media or start another package. Rejection stops this run and requires a newly scoped follow-up.",
+      "choices": {
+        "approved": {
+          "label": "Accept task",
+          "comment": "optional"
+        },
+        "rejected": {
+          "label": "Changes required; stop run",
+          "comment": "required"
+        }
+      },
+      "on": {
+        "rejected": "fail"
+      }
+    }
+  ]
+}

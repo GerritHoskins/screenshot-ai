@@ -1,0 +1,10 @@
+{
+  "title": "Investigator",
+  "readonly": true,
+  "agent": {
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "mode": "auto",
+    "thinking": "high"
+  }
+}

@@ -1,4 +1,5 @@
 import { escapeHtml } from "./utils/formatting";
+import { initAgentsTab } from "./settings-agents";
 /**
  * Settings UI - Phase 1: Tabbed Interface
  * Redesigned with tabs: Providers / API Keys / Context / Prompt / Diagnostics
@@ -50,6 +51,15 @@ navItems.forEach(item => {
   });
 });
 
+// Deep link: settings.html#api-keys (also #providers, #context, #prompt, #agents, #diagnostics)
+const DEEP_LINK_TABS = ['providers', 'api-keys', 'context', 'prompt', 'agents', 'diagnostics'];
+function showTabFromHash(): void {
+  const tabId = window.location.hash.replace(/^#/, '');
+  if (DEEP_LINK_TABS.includes(tabId)) showTab(tabId);
+}
+showTabFromHash();
+window.addEventListener('hashchange', showTabFromHash);
+
 function updateSaveStatus(message: string, isSaved: boolean = true) {
   saveStatus.textContent = message;
   saveStatus.classList.toggle('saved', isSaved);
@@ -73,6 +83,7 @@ function updateSaveStatus(message: string, isSaved: boolean = true) {
 const providerSelect = document.getElementById('provider-select') as HTMLSelectElement;
 const modelSelect = document.getElementById('model-select') as HTMLSelectElement;
 const modelDescription = document.getElementById('model-description') as HTMLSpanElement;
+const singleKeyShortcuts = document.getElementById('single-key-shortcuts') as HTMLInputElement;
 
 // OpenAI elements
 const openaiKeyInput = document.getElementById('openai-key') as HTMLInputElement;
@@ -542,6 +553,9 @@ async function loadSettings(): Promise<void> {
     }
   }
 
+  // Single-key shortcuts default to on; only an explicit false turns them off.
+  singleKeyShortcuts.checked = (await api.settings.get('singleKeyShortcuts')) !== false;
+
   // Load API key statuses and test info
   const [openaiStatus, anthropicStatus, openaiTestStatus, anthropicTestStatus] = await Promise.all([
     api.settings.getApiKeyStatus('openai'),
@@ -687,6 +701,17 @@ providerSelect.addEventListener('change', async () => {
   
   providerSelect.setAttribute('data-previous-provider', provider);
   updateSaveStatus('Provider updated');
+});
+
+singleKeyShortcuts.addEventListener('change', async () => {
+  const enabled = singleKeyShortcuts.checked;
+  try {
+    await api.settings.set('singleKeyShortcuts', enabled);
+    updateSaveStatus(enabled ? 'Single-key shortcuts on' : 'Single-key shortcuts off');
+  } catch {
+    singleKeyShortcuts.checked = !enabled;
+    updateSaveStatus("Couldn't save the shortcut setting", false);
+  }
 });
 
 // Model selection
@@ -2245,6 +2270,7 @@ repoAddBtn.addEventListener('click', async () => {
 });
 
 // Initialize
+initAgentsTab({ api, showMessage, updateSaveStatus });
 loadSettings().catch(error => {
   console.error('Failed to load settings:', error);
 });

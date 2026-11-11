@@ -8,6 +8,10 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
 
 # Cancel in-progress runs for same branch
 concurrency:
@@ -97,13 +101,25 @@ jobs:
   # Build
   # ============================================================================
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.platform }}-${{ matrix.arch }})
     needs: [lint, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+          - os: macos-latest
+            platform: mac
+            arch: arm64
+          - os: windows-latest
+            platform: win
+            arch: x64
+          - os: windows-11-arm
+            platform: win
+            arch: arm64
     
     steps:
       - name: Checkout code
@@ -121,20 +137,24 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Package application
-        run: npm run package
+      - name: Package unsigned application without publishing
+        run: npm run package:unsigned -- --${{ matrix.platform }} --${{ matrix.arch }}
         env:
           # Skip signing for CI builds
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      - name: Verify every expected installer or archive exists
+        run: npm run verify:packaging -- --artifacts ${{ matrix.platform }} ${{ matrix.arch }}
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.os }}
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}-unsigned
           path: |
-            dist/*.dmg
-            dist/*.exe
-            dist/*.AppImage
+            release/*.dmg
+            release/*.exe
+            release/*-mac-*.zip
+          if-no-files-found: error
           retention-days: 7
 
   # ============================================================================

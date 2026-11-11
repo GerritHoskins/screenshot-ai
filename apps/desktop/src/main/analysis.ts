@@ -34,6 +34,8 @@ export interface AnalysisConfig {
   workspaceRoot?: string;
 }
 
+const PROVIDER_LABELS: Record<ProviderType, string> = { openai: 'OpenAI', anthropic: 'Anthropic' };
+
 const DEFAULT_CONFIG: Required<Omit<AnalysisConfig, 'provider' | 'workspaceContextEnabled' | 'workspaceRoot'>> = {
   model: '', // Will use provider default
   maxTokens: 4096,
@@ -46,8 +48,15 @@ const DEFAULT_CONFIG: Required<Omit<AnalysisConfig, 'provider' | 'workspaceConte
 // Analysis Service
 // ============================================================================
 
+/** What the last request actually sent besides the image. Null means nothing left the machine. */
+export interface SentSummary {
+  contextFiles: number;
+  customPrompt: boolean;
+}
+
 export class AnalysisService {
   public readonly providerType: ProviderType;
+  public lastSent: SentSummary | null = null;
   private config: Required<Omit<AnalysisConfig, 'provider' | 'workspaceContextEnabled' | 'workspaceRoot'>> & {
     workspaceContextEnabled?: boolean;
     workspaceRoot?: string;
@@ -71,12 +80,16 @@ export class AnalysisService {
    * @param image - Screenshot image buffer
    * @param previousFeedback - Optional feedback from previous attempt ('positive' | 'negative')
    * @param workspaceRoot - Optional workspace root directory for context loading
+   * @param signal - Optional cancellation signal, passed through to the provider request
    */
   async analyzeScreenshot(
     image: Buffer,
     previousFeedback?: 'positive' | 'negative' | null,
-    workspaceRoot?: string
+    workspaceRoot?: string,
+    signal?: AbortSignal
   ): Promise<AIResponse<ScreenshotAnalysis>> {
+    this.lastSent = null;
+    if (signal?.aborted) return this.cancelledResponse();
     // Get API key from keychain
     const apiKey = await getApiKey(this.providerType);
     if (!apiKey) {
@@ -84,11 +97,11 @@ export class AnalysisService {
         success: false,
         error: {
           code: 'AUTH_ERROR',
-          message: `API key not found for ${this.providerType}. Please configure it in settings.`,
+          message: `No API key is stored for ${PROVIDER_LABELS[this.providerType]}. Add one in Settings > API Keys.`,
           retryable: false,
         },
         metadata: {
-          model: this.config.model || 'unknown',
+          model: this.model,
           provider: this.providerType,
           promptTokens: 0,
           completionTokens: 0,
@@ -100,6 +113,7 @@ export class AnalysisService {
 
     // Persisted settings are enforced by the shared loader used by preview.
     let workspaceContextText = '';
+    let contextFiles = 0;
     if (this.config.workspaceContextEnabled !== false) {
       try {
         const context = await loadUnifiedContext({ workspaceRoot: workspaceRoot ?? this.config.workspaceRoot });
@@ -108,10 +122,12 @@ export class AnalysisService {
           return this.privacyError();
         }
         workspaceContextText = formatUnifiedContextAsText(context);
+        contextFiles = context.files.length;
       } catch {
         return this.privacyError('Context could not be verified. Review context settings or disable repository context and try again.');
       }
     }
+    if (signal?.aborted) return this.cancelledResponse();
 
     // Generate prompt (use feedback-aware prompt if retrying with feedback)
     let prompt: string;
@@ -155,7 +171,7 @@ export class AnalysisService {
 
     // Create provider with config
     const providerConfig: ProviderConfig = {
-      model: this.config.model || this.getDefaultModel(),
+      model: this.model,
       maxTokens: this.config.maxTokens,
       temperature: this.config.temperature,
       timeout: this.config.timeout,
@@ -191,8 +207,10 @@ export class AnalysisService {
     }
 
     // Execute analysis
+    if (signal?.aborted) return this.cancelledResponse();
+    this.lastSent = { contextFiles: workspaceContextText ? contextFiles : 0, customPrompt: usingCustomPrompt };
     try {
-      const response = await provider.complete<ScreenshotAnalysis>(prompt, image);
+      const response = await provider.complete<ScreenshotAnalysis>(prompt, image, signal ? { signal } : undefined);
 
       // Validate response data if successful
       if (response.success && response.data) {
@@ -223,6 +241,7 @@ export class AnalysisService {
 
       return response;
     } catch (error) {
+      if (signal?.aborted) return this.cancelledResponse();
       return {
         success: false,
         error: {
@@ -247,15 +266,30 @@ export class AnalysisService {
   // from @prompts/templates for consistency and better prompt engineering
 
   /**
-   * Get default model for the provider.
+   * Effective model for this service: the configured model, or the provider default.
    */
-  private privacyError(message = 'Potential sensitive data detected. Remove it from context or custom prompts, or disable repository context, then try again.'): AIResponse<ScreenshotAnalysis> {
-    return createErrorResponse(createAIError('INVALID_REQUEST', message), {
-      model: this.config.model || this.getDefaultModel(), provider: this.providerType,
+  get model(): string {
+    return this.config.model || this.getDefaultModel();
+  }
+
+  private cancelledResponse(): AIResponse<ScreenshotAnalysis> {
+    return createErrorResponse(createAIError('CANCELLED', 'Analysis cancelled.', { retryable: true }), {
+      model: this.model, provider: this.providerType,
       promptTokens: 0, completionTokens: 0, latencyMs: 0, attemptNumber: 1,
     });
   }
 
+  private privacyError(message = 'Potential sensitive data detected. Remove it from context or custom prompts, or disable repository context, then try again.'): AIResponse<ScreenshotAnalysis> {
+    // Tagged so the window can say "not sent" instead of blaming the model.
+    return createErrorResponse(createAIError('INVALID_REQUEST', message, { details: { reason: 'privacy' }, retryable: false }), {
+      model: this.model, provider: this.providerType,
+      promptTokens: 0, completionTokens: 0, latencyMs: 0, attemptNumber: 1,
+    });
+  }
+
+  /**
+   * Get default model for the provider.
+   */
   private getDefaultModel(): string {
     switch (this.providerType) {
       case 'openai':

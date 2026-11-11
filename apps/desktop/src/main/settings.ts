@@ -26,6 +26,7 @@ import { wrapRepoError, formatRepoErrorForLog } from '@context/repo-errors';
 import { storeRepoToken, validateRepoToken, testRepoToken, getAuthStatus, deleteRepoToken } from '@security/repo-auth';
 import { invalidateCache } from '@context/repo-cache';
 import { startGitHubDeviceFlow, startGitLabDeviceFlow, pollGitHubToken, pollGitLabToken } from '@security/oauth';
+import { applyMcpSettings, copyMcpSetupCommand, getMcpStatus, resetMcpToken } from './mcp';
 
 const logger = getLogger();
 
@@ -44,6 +45,8 @@ interface AppSettings extends SettingsSchema {
   promptEnabled?: boolean;
   workspaceContextEnabled?: boolean;
   workspaceRoot?: string;
+  /** Unmodified C/R/E/1–4 shortcuts in the main window (WCAG 2.1.4). Absent means on. */
+  singleKeyShortcuts?: boolean;
 }
 
 function normalizeAppSettings(raw: Record<string, unknown>): AppSettings {
@@ -202,6 +205,8 @@ export function registerSettingsHandlers(rendererDirectory: string): void {
       settings.context.enabled = value as boolean;
     } else if (key === 'workspaceRoot') {
       settings.context.workspaceRoot = value as string;
+    } else if (key === 'singleKeyShortcuts') {
+      settings.singleKeyShortcuts = value as boolean;
     } else {
       settings.advanced = { ...settings.advanced, [key]: value };
       Object.assign(settings, { [key]: value });
@@ -569,6 +574,9 @@ export function registerSettingsHandlers(rendererDirectory: string): void {
         fs.unlinkSync(promptPath);
       }
       
+      // Settings are gone, so agent access turns off; a new token is issued if it is turned on again.
+      await resetMcpToken();
+
       logger.info('settings', 'All settings reset');
       return { success: true };
     } catch (error) {
@@ -576,6 +584,24 @@ export function registerSettingsHandlers(rendererDirectory: string): void {
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   });
+
+  // ============================================================================
+  // Agent access (MCP server mode)
+  // ============================================================================
+
+  handle('settings:getMcpStatus', async () => getMcpStatus());
+
+  handle('settings:setMcpEnabled', async (_event, enabled: boolean) => {
+    const settings = getSettings();
+    settings.mcp = { ...settings.mcp, enabled };
+    saveSettings(settings);
+    logger.info('settings', 'Agent access updated', { enabled });
+    return applyMcpSettings();
+  });
+
+  handle('settings:copyMcpSetupCommand', async () => copyMcpSetupCommand());
+
+  handle('settings:resetMcpToken', async () => resetMcpToken());
 
   // ============================================================================
   // Repository Authentication (GitHub/GitLab)

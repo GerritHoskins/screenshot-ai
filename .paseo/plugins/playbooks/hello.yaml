@@ -1,0 +1,41 @@
+hidden: true
+title: Hello
+description: Write a short repository note, then wait for human approval.
+concurrency: 1
+
+inputs:
+  topic:
+    type: string
+    required: true
+    description: What the NOTES.md section should explain
+
+outputs:
+  changes:
+    type: string
+    value: "{{ steps.write.outputs.changes }}"
+
+steps:
+  - id: write
+    role: writer
+    inputs: [topic]
+    prompt: "Add a short NOTES.md section about {{ inputs.topic }}."
+    outputs:
+      changes:
+        type: string
+
+  - id: approve
+    needs: [write]
+    gate: "Approve the note, or reject it with feedback for revision. Approval completes this run without committing."
+    choices:
+      approved:
+        label: Approve
+        color: success
+        comment: optional
+      rejected:
+        label: Request revision
+        color: danger
+        comment: required
+    on:
+      rejected:
+        goto: write
+        max_loops: 3
