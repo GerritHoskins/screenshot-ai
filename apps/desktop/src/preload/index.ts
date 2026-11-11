@@ -47,6 +47,14 @@ export interface McpStatus {
   error: string | null;
 }
 
+/** Secret shield settings and engine availability, from apps/desktop/src/main/shield.ts. */
+export interface ShieldStatus {
+  enabled: boolean;
+  alwaysPreview: boolean;
+  ocrAvailable: boolean;
+  platform: string;
+}
+
 export interface ExposedAPI {
   capture: {
     start: () => void;
@@ -124,6 +132,9 @@ export interface ExposedAPI {
     setMcpEnabled: (enabled: boolean) => Promise<McpStatus>;
     copyMcpSetupCommand: () => Promise<{ success: boolean; error?: string }>;
     resetMcpToken: () => Promise<McpStatus>;
+    // Secret shield
+    getShieldStatus: () => Promise<ShieldStatus>;
+    setShieldOptions: (options: { enabled?: boolean; alwaysPreview?: boolean }) => Promise<ShieldStatus>;
     // Repository authentication
     connectRepoProvider: (provider: 'github' | 'gitlab', token: string, username?: string) => Promise<{ 
       success: boolean; 
@@ -241,6 +252,8 @@ const api: ExposedAPI = {
     setMcpEnabled: (enabled) => ipcRenderer.invoke("settings:setMcpEnabled", enabled),
     copyMcpSetupCommand: () => ipcRenderer.invoke("settings:copyMcpSetupCommand"),
     resetMcpToken: () => ipcRenderer.invoke("settings:resetMcpToken"),
+    getShieldStatus: () => ipcRenderer.invoke("settings:getShieldStatus"),
+    setShieldOptions: (options) => ipcRenderer.invoke("settings:setShieldOptions", options),
     connectRepoProvider: (provider, token, username) => ipcRenderer.invoke("settings:connectRepoProvider", provider, token, username),
     testRepoToken: (provider, token) => ipcRenderer.invoke("settings:testRepoToken", provider, token),
     getRepoAuthStatus: (provider, username) => ipcRenderer.invoke("settings:getRepoAuthStatus", provider, username),

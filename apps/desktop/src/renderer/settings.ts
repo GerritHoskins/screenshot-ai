@@ -1,5 +1,6 @@
 import { escapeHtml } from "./utils/formatting";
 import { initAgentsTab } from "./settings-agents";
+import { initPrivacyTab } from "./settings-privacy";
 /**
  * Settings UI - Phase 1: Tabbed Interface
  * Redesigned with tabs: Providers / API Keys / Context / Prompt / Diagnostics
@@ -51,8 +52,8 @@ navItems.forEach(item => {
   });
 });
 
-// Deep link: settings.html#api-keys (also #providers, #context, #prompt, #agents, #diagnostics)
-const DEEP_LINK_TABS = ['providers', 'api-keys', 'context', 'prompt', 'agents', 'diagnostics'];
+// Deep link: settings.html#api-keys (also #providers, #context, #prompt, #privacy, #agents, #diagnostics)
+const DEEP_LINK_TABS = ['providers', 'api-keys', 'context', 'prompt', 'privacy', 'agents', 'diagnostics'];
 function showTabFromHash(): void {
   const tabId = window.location.hash.replace(/^#/, '');
   if (DEEP_LINK_TABS.includes(tabId)) showTab(tabId);
@@ -2271,6 +2272,7 @@ repoAddBtn.addEventListener('click', async () => {
 
 // Initialize
 initAgentsTab({ api, showMessage, updateSaveStatus });
+initPrivacyTab({ api, updateSaveStatus });
 loadSettings().catch(error => {
   console.error('Failed to load settings:', error);
 });

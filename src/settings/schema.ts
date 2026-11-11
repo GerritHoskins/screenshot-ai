@@ -61,6 +61,11 @@ export interface SettingsSchema {
     temperature?: number;
     timeout?: number;
   };
+  /** Secret shield: scan captures for secrets before sending (on unless explicitly false). */
+  shield?: {
+    enabled?: boolean;
+    alwaysPreview?: boolean;
+  };
   /** Local MCP server for agents (off by default; read at startup). */
   mcp?: {
     enabled?: boolean;

@@ -45,6 +45,7 @@ vi.mock('electron', () => ({
 }));
 vi.mock('fs', () => ({ existsSync: () => false }));
 vi.mock('../../apps/desktop/src/main/capture', () => ({ captureScreenSelection: mocks.capture }));
+vi.mock('../../apps/desktop/src/main/shield', () => ({ shieldCapture: async (png: Buffer) => png }));
 vi.mock('../../apps/desktop/src/main/analysis', () => ({ getAnalysisService: () => ({ analyzeScreenshot: mocks.analyze, providerType: 'anthropic', model: 'claude-test-model' }) }));
 vi.mock('../../apps/desktop/src/main/settings', () => ({ registerSettingsHandlers: mocks.settings }));
 vi.mock('../../src/logging', () => ({ getLogger: () => ({ debug: vi.fn(), info: mocks.logInfo, warn: vi.fn(), error: vi.fn(), logAIResponse: vi.fn(), logAIRequest: vi.fn() }) }));

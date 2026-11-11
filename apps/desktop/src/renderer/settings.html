@@ -847,6 +847,7 @@
         <a href="#" class="nav-item" data-tab="api-keys">API Keys</a>
         <a href="#" class="nav-item" data-tab="context">Context</a>
         <a href="#" class="nav-item" data-tab="prompt">Prompt</a>
+        <a href="#" class="nav-item" data-tab="privacy">Privacy</a>
         <a href="#" class="nav-item" data-tab="agents">Agents</a>
         <a href="#" class="nav-item" data-tab="diagnostics">Diagnostics</a>
       </nav>
@@ -1086,6 +1087,42 @@
                   <div class="form-label-hint form-note">
                     <strong>Reset to Default</strong> clears your custom prompt and disables it. <strong>Disable</strong> keeps your prompt but uses the default.
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Privacy Tab -->
+        <div id="tab-privacy" class="tab-content">
+          <div class="card">
+            <h2 class="card-title">Secret Shield</h2>
+            <p class="card-description">Before a capture is sent, ScreenshotAI reads its text on this computer and covers API keys, passwords and tokens. You check what is covered before anything leaves.</p>
+            <div class="form-grid">
+              <div class="form-row">
+                <label class="form-label">Scan</label>
+                <div class="form-control">
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="shield-enabled" />
+                    <label for="shield-enabled">Scan captures for secrets before sending</label>
+                  </div>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Review</label>
+                <div class="form-control">
+                  <div class="checkbox-group">
+                    <input type="checkbox" id="shield-always-preview" />
+                    <label for="shield-always-preview">Review every capture, even when nothing is found</label>
+                  </div>
+                  <span class="form-label-hint">Otherwise the review only opens when something is found. Captures requested by agents always open it.</span>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Detection</label>
+                <div class="form-control">
+                  <span id="shield-engine" role="status" aria-live="polite">Loading...</span>
+                  <span class="form-label-hint">Detection is a safety net, not a guarantee. Check the image yourself before sending sensitive screens.</span>
                 </div>
               </div>
             </div>

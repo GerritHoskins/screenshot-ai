@@ -70,6 +70,17 @@ describe('desktop IPC payload validation', () => {
     }
   });
 
+  it('accepts only known boolean shield options', () => {
+    expect(validateDesktopIpcArgs('settings:getShieldStatus', [])).toBe(true);
+    expect(validateDesktopIpcArgs('settings:getShieldStatus', ['extra'])).toBe(false);
+    expect(validateDesktopIpcArgs('settings:setShieldOptions', [{ enabled: false }])).toBe(true);
+    expect(validateDesktopIpcArgs('settings:setShieldOptions', [{ enabled: true, alwaysPreview: true }])).toBe(true);
+    expect(validateDesktopIpcArgs('settings:setShieldOptions', [{}])).toBe(false);
+    expect(validateDesktopIpcArgs('settings:setShieldOptions', [{ enabled: 'no' }])).toBe(false);
+    expect(validateDesktopIpcArgs('settings:setShieldOptions', [{ enabled: true, rules: [] }])).toBe(false);
+    expect(validateDesktopIpcArgs('settings:setShieldOptions', [null])).toBe(false);
+  });
+
   it('accepts singleKeyShortcuts only as a boolean', () => {
     expect(validateDesktopIpcArgs('settings:set', ['singleKeyShortcuts', false])).toBe(true);
     expect(validateDesktopIpcArgs('settings:set', ['singleKeyShortcuts', true])).toBe(true);

@@ -9,6 +9,7 @@ import { registerSettingsHandlers } from "./settings";
 import * as fs from "fs";
 import { hardenWindow, isTrustedIpcSender, validateDesktopIpcArgs, SECURE_WEB_PREFERENCES } from "@security/ipc-hardening";
 import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
+import { shieldCapture } from "./shield";
 import { initAgentServer, stopAgentServer, McpToolError, AGENT_BUSY_MESSAGE, type AgentBridge } from "./mcp";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -257,6 +258,7 @@ async function runCapture() {
     let image: Buffer | null;
     try {
       image = await captureScreenSelection();
+      if (image) image = await shieldCapture(image, { parent: mainWindow }); // null = user cancelled the review
     } catch (captureError) {
       isProcessing = false;
       // A failed capture supersedes the previous image: Retry should capture again.
