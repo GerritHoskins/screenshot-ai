@@ -11,23 +11,51 @@ Use it to understand an error message, pull text or code from a screenshot, or a
 ## What you can do
 
 - Select a screen region with the **Capture** button or a global keyboard shortcut.
+- Check every capture for API keys, passwords and tokens on your computer, and review what is covered before anything is sent.
 - Read an answer alongside extracted text, code blocks, and structured findings.
-- See which provider and model are analyzing your capture, and cancel a run in progress.
+- See which provider and model are analyzing your capture, what was included, and cancel a run in progress.
 - Run the analysis again or provide feedback for a revised response.
 - Copy results as Markdown or JSON, or save them as a Markdown or JSON file.
 - Customize the analysis prompt and optionally include project context from a local folder, GitHub, or GitLab.
+- Let AI agents such as Claude Code request a capture that you select and approve.
+
+### Capture and analyze
+
+| First launch | Analyzing |
+| --- | --- |
+| ![Welcome screen explaining how to capture, which provider receives the image, and the secret check](docs/screenshots/welcome.png) | ![A run in progress showing the provider, model, included files and a Cancel button](docs/screenshots/analyzing.png) |
+
+### Results
 
 | Issues | Suggestions |
 | --- | --- |
-| ![Issues tab listing findings by severity, with one suggested fix expanded](docs/screenshots/analysis-issues.png) | ![Suggestions tab with notes for error messaging and logging](docs/screenshots/analysis-notes.png) |
+| ![Issues tab listing findings by severity, each with a suggested fix and a Copy button](docs/screenshots/analysis-issues.png) | ![Suggestions tab with notes for error messaging and logging](docs/screenshots/analysis-notes.png) |
 
-| First launch | Error recovery |
+| Run details | Export |
 | --- | --- |
-| ![Welcome screen explaining how to capture and which provider receives the image](docs/screenshots/welcome.png) | ![A missing API key error with a button that opens API key settings](docs/screenshots/error.png) |
+| ![Run details listing the provider, the context files sent with the image, the secret check, model, tokens and timing](docs/screenshots/run-details.png) | ![Export menu with options to copy or save the report as Markdown or JSON](docs/screenshots/export-menu.png) |
+
+### Secret check
+
+Before a capture leaves your computer, ScreenshotAI reads its text locally and covers likely secrets. You can cover more areas by dragging, or cancel.
+
+| Review before sending | What was covered |
+| --- | --- |
+| ![Review window with an API key in the captured code covered in black, and Send for analysis and Cancel buttons](docs/screenshots/shield-review.png) | ![Screenshot viewer outlining the one area that was covered before sending](docs/screenshots/secret-check-viewer.png) |
+
+| Blocked request | Dark mode |
+| --- | --- |
+| ![Not sent error: a possible secret in the workspace context, with buttons to open Context settings, run again, or go back to the last result](docs/screenshots/error-privacy.png) | ![Issues tab in the dark theme](docs/screenshots/analysis-issues-dark.png) |
+
+### Settings
 
 | Providers | API keys | Project context |
 | --- | --- | --- |
 | ![Provider and model selection](docs/screenshots/settings-providers.png) | ![API key settings for OpenAI and Anthropic](docs/screenshots/settings-api-keys.png) | ![Workspace context settings](docs/screenshots/settings-context.png) |
+
+| Privacy | Agent access |
+| --- | --- |
+| ![Secret Shield settings for scanning captures and reviewing every capture](docs/screenshots/settings-privacy.png) | ![Agent access settings for letting AI agents request captures over MCP](docs/screenshots/settings-agents.png) |
 
 <sub>Screenshots use sample analysis data.</sub>
 
@@ -72,7 +100,7 @@ GitHub/GitLab connections require authentication. OAuth connections additionally
 
 - Your selected screenshot and analysis prompt are sent to the AI provider you choose. Enabled project context can also send filenames and file contents. Repository integrations contact GitHub or GitLab.
 - Desktop API keys use the operating system's credential store through `keytar`.
-- Detected secrets in project context or custom prompts block submission. Secret detection is heuristic and does not inspect screenshot pixels; review sensitive material yourself.
+- Captures are checked on your computer for API keys, passwords and tokens, which are covered before sending; you review the result first. Detected secrets in project context or custom prompts block submission. Detection is heuristic, so review sensitive material yourself.
 - Raw prompts and analysis results are not logged.
 
 Review AI-generated answers before relying on them, especially code changes or suggested fixes.

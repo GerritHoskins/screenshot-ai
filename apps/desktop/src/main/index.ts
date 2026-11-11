@@ -6,9 +6,11 @@ import { getAnalysisService } from "./analysis";
 import { getLogger } from "@logging";
 import { mapCaptureError, mapProviderError } from "@errors";
 import { registerSettingsHandlers } from "./settings";
+import { getApiKey } from "@security/keychain";
 import * as fs from "fs";
 import { hardenWindow, isTrustedIpcSender, validateDesktopIpcArgs, SECURE_WEB_PREFERENCES } from "@security/ipc-hardening";
 import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
+import { shieldCapture, type ShieldSummary } from "./shield";
 import { initAgentServer, stopAgentServer, McpToolError, AGENT_BUSY_MESSAGE, type AgentBridge } from "./mcp";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -160,7 +162,9 @@ async function runAnalysis(image: Buffer, feedback: 'positive' | 'negative' | nu
     });
 
     const workspaceRoot = getWorkspaceRoot();
-    const response = await currentService.analyzeScreenshot(image, feedback, workspaceRoot, controller.signal);
+    const response = await currentService.analyzeScreenshot(image, feedback, workspaceRoot, controller.signal, (sent) => {
+      if (isCurrent()) mainWindow?.webContents.send("analysis:processing", { stage: "sending", sent });
+    });
 
     if (!isCurrent()) {
       logger.debug('main', 'Discarding result of cancelled analysis');
@@ -216,6 +220,8 @@ async function runAnalysis(image: Buffer, feedback: 'positive' | 'negative' | nu
       code: errorResponse.error?.code || 'UNKNOWN_ERROR',
       message: getErrorMessage(errorResponse.error?.message) || 'Analysis failed',
       retryable: errorResponse.error?.retryable ?? true,
+      // The service catches provider failures itself, so reaching this path means nothing was sent.
+      sent: null,
     });
     return errorResponse;
   } finally {
@@ -248,15 +254,28 @@ async function runCapture() {
     return;
   }
 
+  // Claimed before the key lookup's await, so a double press can't open two overlays.
   isProcessing = true;
+  // Every entry point (button, C, global hotkey) checks the key before the user selects a region.
+  const provider = loadSettingsFromFile().provider === 'anthropic' ? 'anthropic' : 'openai';
+  if (!(await getApiKey(provider).catch(() => null))) {
+    isProcessing = false;
+    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+    mainWindow?.webContents.send("analysis:error", {
+      code: 'AUTH_ERROR', retryable: false, sent: null, metadata: { provider },
+      message: `No API key is stored for ${provider === 'anthropic' ? 'Anthropic' : 'OpenAI'}. Add one in Settings > API Keys.`,
+    });
+    return;
+  }
   try {
-    // Step 1: Capture screenshot
     logger.info('main', 'Starting capture');
     mainWindow?.webContents.send("analysis:processing", { stage: "capture" });
     
     let image: Buffer | null;
+    let shield: ShieldSummary | null = null;
     try {
       image = await captureScreenSelection();
+      if (image) image = await shieldCapture(image, { parent: mainWindow, onSummary: (s) => { shield = s; } }); // null = user cancelled the review
     } catch (captureError) {
       isProcessing = false;
       // A failed capture supersedes the previous image: Retry should capture again.
@@ -296,11 +315,10 @@ async function runCapture() {
     lastImage = image;
     logger.info('main', 'Capture successful', { imageSize: image.length });
 
-    // Convert image buffer to data URL for preview
     const screenshotDataUrl = nativeImage.createFromBuffer(image).toDataURL();
     
     // Send screenshot preview to renderer immediately after capture
-    mainWindow?.webContents.send("analysis:screenshot", { dataUrl: screenshotDataUrl });
+    mainWindow?.webContents.send("analysis:screenshot", { dataUrl: screenshotDataUrl, shield });
 
     // Step 2: Analyze with AI (reload service to get latest provider from settings)
     lastFeedback = null; // Reset feedback on new capture
@@ -323,10 +341,17 @@ async function runCapture() {
   }
 }
 
-// Suppress some Electron console warnings
-// Note: DXGI warnings may still appear but are usually harmless
+/** Start a capture from any entry point and report an unexpected failure to the window. */
+function startCapture(source: 'hotkey' | 'button' | 'retry') {
+  runCapture().catch((err) => {
+    isProcessing = false;
+    logger.error('main', `Capture failed from ${source}`, err instanceof Error ? err : undefined);
+    mainWindow?.webContents.send("analysis:error", { code: 'CAPTURE_ERROR', message: err?.message ?? "Capture failed", retryable: true });
+  });
+}
+
+// Reduce Electron/DXGI console noise (some warnings may still appear and are harmless).
 app.commandLine.appendSwitch('disable-logging');
-// Try to reduce DXGI noise (may not work in all cases)
 app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 
 app.whenReady().then(async () => {
@@ -345,16 +370,7 @@ app.whenReady().then(async () => {
   
   await createMainWindow();
 
-  globalShortcut.register("CommandOrControl+Shift+S", () => {
-    runCapture().catch((err) => {
-      isProcessing = false;
-      mainWindow?.webContents.send("analysis:error", {
-        code: 'CAPTURE_ERROR',
-        message: err?.message ?? "Capture failed",
-        retryable: true,
-      });
-    });
-  });
+  globalShortcut.register("CommandOrControl+Shift+S", () => startCapture('hotkey'));
 
   await initAgentServer(agentBridge);
 });
@@ -369,15 +385,7 @@ ipcMain.on("capture:start", async (event, ...args) => {
   logger.info('main', 'Capture button clicked');
   if (!isProcessing) {
     logger.info('main', 'Starting capture from button');
-    runCapture().catch((err) => {
-      isProcessing = false;
-      logger.error('main', 'Capture failed from button', err instanceof Error ? err : undefined);
-      mainWindow?.webContents.send("analysis:error", {
-        code: 'CAPTURE_ERROR',
-        message: err?.message ?? "Capture failed",
-        retryable: true,
-      });
-    });
+    startCapture('button');
   } else {
     logger.debug('main', 'Capture button clicked but already processing');
   }
@@ -393,15 +401,7 @@ ipcMain.on("analysis:retry", async (event, ...args) => {
   if (!lastImage) {
     // Nothing to re-analyze (e.g. the capture itself failed): start a new capture.
     logger.info('main', 'Retry without a previous image, starting a new capture');
-    runCapture().catch((err) => {
-      isProcessing = false;
-      logger.error('main', 'Capture failed from retry', err instanceof Error ? err : undefined);
-      mainWindow?.webContents.send("analysis:error", {
-        code: 'CAPTURE_ERROR',
-        message: err?.message ?? "Capture failed",
-        retryable: true,
-      });
-    });
+    startCapture('retry');
     return;
   }
 

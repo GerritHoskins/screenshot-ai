@@ -3,12 +3,13 @@
  * approval of every capture an agent asks for.
  */
 
-import { app, BrowserWindow, clipboard, dialog, nativeImage } from 'electron';
+import { app, BrowserWindow, clipboard } from 'electron';
+import { shieldCapture } from './shield';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getLogger } from '@logging';
-import { McpProtocolHandler, McpToolError, type CaptureRequest } from '@/mcp/protocol';
+import { McpProtocolHandler, McpToolError } from '@/mcp/protocol';
 import { startMcpHttpServer, type RunningMcpServer } from '@/mcp/http-server';
 import type { AIResponse, ScreenshotAnalysis } from '@shared-types/ai-response';
 
@@ -70,28 +71,6 @@ function writeConnectionFile(filePath: string, url: string, token: string): void
   fs.chmodSync(filePath, 0o600);
 }
 
-async function approveCapture(png: Buffer, request: CaptureRequest, parent: BrowserWindow | null): Promise<boolean> {
-  const preview = nativeImage.createFromBuffer(png);
-  const { width } = preview.getSize();
-  const icon = width > 360 ? preview.resize({ width: 360 }) : preview;
-  const options: Electron.MessageBoxOptions = {
-    type: 'question',
-    title: 'Share capture with agent',
-    message: `Send this capture to ${request.clientName}?`,
-    detail: [
-      request.reason ? `Reason given by the agent: "${request.reason}"` : 'The agent gave no reason.',
-      'Check the preview for passwords, keys or personal data before sending.',
-    ].join('\n\n'),
-    icon,
-    buttons: ['Send to agent', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1,
-    noLink: true,
-  };
-  const result = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
-  return result.response === 0;
-}
-
 async function startAgentServer(bridge: AgentBridge): Promise<RunningMcpServer | null> {
   const settings = readMcpSettings();
   if (!settings.enabled) {
@@ -104,9 +83,10 @@ async function startAgentServer(bridge: AgentBridge): Promise<RunningMcpServer |
       logger.info('mcp', 'Agent requested a capture', { client: request.clientName, hasReason: !!request.reason });
       const png = await bridge.captureForAgent();
       if (!png) return null;
-      const approved = await approveCapture(png, request, bridge.getMainWindow());
-      logger.info('mcp', 'Agent capture decision', { approved });
-      return approved ? png : null;
+      // The review window is the approval step: the shield covers secrets and the user sends or cancels.
+      const reviewed = await shieldCapture(png, { parent: bridge.getMainWindow(), agent: { clientName: request.clientName, reason: request.reason } });
+      logger.info('mcp', 'Agent capture decision', { approved: reviewed !== null });
+      return reviewed;
     },
     analyze: (png, signal) => bridge.analyzeForAgent(png, signal),
   });

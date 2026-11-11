@@ -35,7 +35,7 @@ describe('desktop AnalysisService', () => {
     await service.analyzeScreenshot(Buffer.from('x'));
     expect(service.lastSent).toBeNull();
     await service.analyzeScreenshot(Buffer.from('x'));
-    expect(service.lastSent).toEqual({ contextFiles: 0, customPrompt: false });
+    expect(service.lastSent).toEqual({ contextFiles: 0, files: [], customPrompt: false });
   });
 
   it('resolves the effective model to the provider default when none is set', () => {

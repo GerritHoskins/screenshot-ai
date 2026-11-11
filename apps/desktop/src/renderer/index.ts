@@ -3,10 +3,13 @@ import {
   buildReportMarkdown,
   confidenceLevel,
   describeError,
+  describeShield,
+  type ShieldSummary,
   escapeHtml,
   extractAnswer,
   formatAnswer,
   formatAnswerParts,
+  formatInline,
   formatIssueText,
   formatSeconds,
   formatTokens,
@@ -29,9 +32,9 @@ import {
 type Provider = 'openai' | 'anthropic';
 type FeedbackReason = 'too-verbose' | 'incorrect' | 'missing-context' | 'wrong-format' | 'other';
 interface FeedbackDetails { reason?: FeedbackReason; comment?: string }
-interface ProcessingPayload { stage: string; provider?: Provider; model?: string; screenshotDataUrl?: string }
+interface ProcessingPayload { stage: string; provider?: Provider; model?: string; screenshotDataUrl?: string; sent?: SentSummary }
 /** What a request sent besides the image; null means nothing left the machine. */
-interface SentSummary { contextFiles: number; customPrompt: boolean }
+interface SentSummary { contextFiles: number; files?: string[]; customPrompt: boolean }
 interface ErrorPayload { code: string; message: string; retryable?: boolean; retryAfterSeconds?: number; metadata?: unknown; sent?: SentSummary | null }
 type ResultPayload = AIResponse<ScreenshotAnalysis> & { sent?: SentSummary | null };
 interface SaveResult { success: boolean; cancelled?: boolean; filePath?: string; error?: string }
@@ -48,7 +51,7 @@ interface RendererApi {
   };
   analysis: {
     onProcessing(callback: (payload: ProcessingPayload) => void): void;
-    onScreenshot(callback: (payload: { dataUrl: string }) => void): void;
+    onScreenshot(callback: (payload: { dataUrl: string; shield?: unknown }) => void): void;
     onResult(callback: (response: ResultPayload) => void): void;
     onError(callback: (payload: ErrorPayload) => void): void;
     retry(): void;
@@ -149,6 +152,8 @@ interface RunMeta {
   /** sending while the request runs; not-sent when it stopped before leaving the machine. */
   sendState?: 'sending' | 'sent' | 'not-sent';
   sent?: SentSummary | null;
+  /** What the local secret check did to this capture (absent for agent captures). */
+  shield?: ShieldSummary;
   provider?: string;
   model?: string;
   durationMs?: number;
@@ -218,12 +223,16 @@ function updateControls() {
   const showingResult = phase === 'success' && !!lastResult;
   // One capture at a time: a second capture would race the request in flight.
   captureBtn.disabled = busy;
-  captureBtn.classList.toggle('btn-primary', !keyMissing);
-  captureBtn.classList.toggle('btn-secondary', keyMissing);
   // In the error view the panel owns the retry action, so the status-bar duplicate steps aside.
   if (phase === 'error' && document.activeElement === runAgainBtn) byId('error-title')?.focus();
   runAgainBtn.hidden = phase === 'error';
   runAgainBtn.disabled = busy || retryBlocked() || !(currentScreenshot || lastResult);
+  // Say where Run again sends the image: it's the one action that leaves the machine without a new capture.
+  const sendTarget = `Sends the same image again to ${providerLabel(settingsProvider ?? runMeta.provider) || 'your AI provider'}.`;
+  runAgainBtn.title = sendTarget;
+  captureBtn.title = `Capture a region and send it to ${providerLabel(settingsProvider) || 'your AI provider'} after a local secret check.`;
+  const runAgainDesc = byId('run-again-desc');
+  if (runAgainDesc) runAgainDesc.textContent = sendTarget;
   exportBtn.disabled = !showingResult;
   if (!showingResult) {
     closeExportMenu(false);
@@ -244,7 +253,8 @@ function updateConfidence(value: unknown) {
     confidenceBadge.hidden = true;
     return;
   }
-  confidenceBadge.textContent = `Model confidence ${Math.round(confidence * 100)}%`;
+  // The wording carries the caveat, so it doesn't depend on a hover-only tooltip.
+  confidenceBadge.textContent = `Self-rated confidence ${Math.round(confidence * 100)}%`;
   confidenceBadge.title = 'How sure the model said it was. It is the model’s own estimate, not a check of the answer.';
   confidenceBadge.dataset.level = confidenceLevel(confidence);
   confidenceBadge.hidden = false;
@@ -294,10 +304,23 @@ function setPreview(dataUrl: string | null) {
   screenshotPreview.disabled = false;
 }
 
-function receiveScreenshot(dataUrl: string) {
+const SHIELD_STATUSES = ['off', 'clean', 'covered', 'sent-uncovered', 'unchecked'];
+
+function readShieldSummary(value: unknown): ShieldSummary | undefined {
+  const s = value as Partial<ShieldSummary> | null | undefined;
+  if (!s || !SHIELD_STATUSES.includes(String(s.status))) return undefined;
+  const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0);
+  const regions = (Array.isArray(s.regions) ? s.regions : [])
+    .slice(0, 200)
+    .map(r => ({ x: count(r?.x), y: count(r?.y), w: count(r?.w), h: count(r?.h) }))
+    .filter(r => r.w > 0 && r.h > 0);
+  return { status: s.status as ShieldSummary['status'], found: count(s.found), covered: count(s.covered), ...(regions.length ? { regions } : {}) };
+}
+
+function receiveScreenshot(dataUrl: string, shield?: unknown) {
   if (!SCREENSHOT_DATA_URL.test(dataUrl)) return;
   currentScreenshot = dataUrl;
-  runMeta = { capturedAt: Date.now() };
+  runMeta = { capturedAt: Date.now(), shield: readShieldSummary(shield) };
   setPreview(dataUrl);
   renderRunMeta();
   updateControls();
@@ -311,6 +334,27 @@ function describeSent(sent: SentSummary): string {
   return parts.join(' + ');
 }
 
+/** The Included summary, expandable to the exact context files so the user can audit what left the machine. */
+function renderSentDetails(sent: SentSummary, summaryText: string): Node {
+  const files = sent.files ?? [];
+  if (!files.length) return document.createTextNode(summaryText);
+  const details = document.createElement('details');
+  details.className = 'sent-files';
+  const summary = document.createElement('summary');
+  summary.textContent = summaryText;
+  const list = document.createElement('ul');
+  list.setAttribute('aria-label', 'Context files sent');
+  for (const file of files) {
+    const item = document.createElement('li');
+    item.className = 'mono';
+    item.textContent = file;
+    item.title = file;
+    list.append(item);
+  }
+  details.append(summary, list);
+  return details;
+}
+
 function renderRunMeta() {
   if (!screenshotMetadata) return;
   const meta = runMeta;
@@ -319,12 +363,13 @@ function renderRunMeta() {
   const sendLabel = meta.sendState === 'sending' ? 'Sending to' : meta.sendState === 'not-sent' ? 'Not sent to' : 'Sent to';
   const rows: Array<[string, string | undefined, boolean]> = [
     [sendLabel, providerLabel(meta.provider) || undefined, false],
-    ['Included', meta.sendState === 'sent' && meta.sent ? describeSent(meta.sent) : undefined, false],
+    ['Included', (meta.sendState === 'sent' || meta.sendState === 'sending') && meta.sent ? describeSent(meta.sent) : undefined, false],
+    ['Secret check', meta.shield ? describeShield(meta.shield) : undefined, false],
     ['Model', model, true],
     ['Duration', typeof meta.durationMs === 'number' && meta.durationMs > 0 ? formatSeconds(meta.durationMs) : undefined, true],
-    ['Tokens', hasTokens ? formatTokens(meta.promptTokens!, meta.completionTokens!, 'en-US') : undefined, true],
+    ['Tokens', hasTokens ? formatTokens(meta.promptTokens!, meta.completionTokens!) : undefined, true],
     ['Image', meta.width && meta.height ? `${meta.width} × ${meta.height}` : undefined, true],
-    ['Captured', meta.capturedAt ? new Date(meta.capturedAt).toLocaleTimeString() : undefined, false],
+    ['Captured', meta.capturedAt ? new Date(meta.capturedAt).toLocaleTimeString() : undefined, true],
   ];
   screenshotMetadata.replaceChildren(...rows.filter(([, value]) => value).map(([label, value, mono]) => {
     const row = document.createElement('div');
@@ -334,6 +379,18 @@ function renderRunMeta() {
     const description = document.createElement('dd');
     if (mono) description.className = 'mono';
     description.textContent = value!;
+    if (label === 'Included' && meta.sent) description.replaceChildren(renderSentDetails(meta.sent, value!));
+    if (label === 'Secret check' && meta.shield?.regions?.length && currentScreenshot) {
+      // The claim is checkable: open the capture with each covered area outlined.
+      const show = document.createElement('button');
+      show.type = 'button';
+      show.className = 'meta-link';
+      show.textContent = value!;
+      show.setAttribute('aria-label', `${value}: show in screenshot`);
+      show.title = 'Show covered areas in the screenshot';
+      show.addEventListener('click', openScreenshotViewer);
+      description.replaceChildren(show);
+    }
     row.append(term, description);
     return row;
   }));
@@ -353,6 +410,8 @@ function syncShortcutLabels() {
   const label = isMac ? '⌘⇧S' : 'Ctrl+Shift+S';
   const capture = byId('capture-shortcut');
   if (capture) capture.textContent = label;
+  const runAgain = byId('run-again-shortcut');
+  if (runAgain) runAgain.textContent = isMac ? '⌘↵' : 'Ctrl+Enter';
   document.querySelectorAll<HTMLElement>('kbd[data-shortcut]').forEach(kbd => { kbd.textContent = label; });
 }
 
@@ -377,8 +436,19 @@ async function loadWelcome() {
     console.error('Failed to read API key status:', error);
   }
   try {
+    const contextOn = (await api.settings.get('workspaceContextEnabled')) === true;
     const context = byId('welcome-context');
-    if (context) context.hidden = (await api.settings.get('workspaceContextEnabled')) !== true;
+    if (context) context.hidden = !contextOn;
+    // Persistent, so the context state is visible on every screen, not only before the first capture.
+    const chip = byId('context-chip');
+    if (chip) chip.hidden = !contextOn;
+    // The secret shield is on unless explicitly turned off (main/shield.ts readShieldSettings).
+    const shield = await api.settings.get('shield') as { enabled?: unknown } | undefined;
+    const shieldOff = shield?.enabled === false;
+    const on = byId('welcome-shield-on');
+    const off = byId('welcome-shield-off');
+    if (on) on.hidden = shieldOff;
+    if (off) off.hidden = !shieldOff;
   } catch (error) {
     console.error('Failed to read context setting:', error);
   }
@@ -386,6 +456,10 @@ async function loadWelcome() {
   if (keyProvider) keyProvider.textContent = label;
   const warning = byId('welcome-key-warning');
   if (warning) warning.hidden = !keyMissing;
+  // Persistent on every screen, so a result view never hides that the next capture can't be sent.
+  const keyChip = byId('key-chip');
+  if (keyChip) keyChip.hidden = !keyMissing;
+  if (phase === 'idle' && welcome && !welcome.hidden) setStatus('idle', keyMissing ? 'Not ready' : 'Ready');
   updateControls();
 }
 
@@ -413,23 +487,23 @@ function runErrorAction(action: ErrorAction) {
  * Rate-limit countdown. The button stays focusable (aria-disabled, not disabled) so keyboard and
  * screen-reader users keep their place; the live status line announces only start and end.
  */
-function startRetryCountdown(button: HTMLButtonElement, seconds: number, title: string) {
+function startRetryCountdown(button: HTMLButtonElement, seconds: number) {
   retryReadyAt = Date.now() + seconds * 1000;
   const render = () => {
     const remaining = Math.max(0, Math.ceil((retryReadyAt - Date.now()) / 1000));
     button.setAttribute('aria-disabled', String(remaining > 0));
-    button.textContent = remaining > 0 ? `Try again in ${remaining}s` : 'Try again';
+    button.textContent = remaining > 0 ? `Run again in ${remaining}s` : 'Run again';
     return remaining;
   };
   render();
   // Announced once; the button carries the live count, so this line never goes stale.
-  setStatus('error', `${title}. Try again unlocks when the wait is over.`);
+  setStatus('error', `Rate limited · wait ${seconds}s`);
   retryTimer = window.setInterval(() => {
     if (render() > 0) return;
     window.clearInterval(retryTimer);
     retryTimer = undefined;
     retryReadyAt = 0;
-    setStatus('error', 'Ready to try again');
+    setStatus('error', 'Ready to run again');
     updateControls();
   }, 1000);
 }
@@ -442,19 +516,26 @@ function showError(payload: ErrorPayload) {
     return;
   }
   const metadata = (payload?.metadata ?? {}) as { provider?: string; model?: string };
-  const provider = runMeta.provider ?? metadata.provider ?? settingsProvider;
-  const model = runMeta.model ?? metadata.model ?? settingsModel;
+  const notSent = payload?.sent === null;
+  // A request that never left names the provider it was about to use, not the previous run's.
+  const provider = notSent ? (metadata.provider ?? settingsProvider) : (runMeta.provider ?? metadata.provider ?? settingsProvider);
+  const model = notSent ? (metadata.model ?? settingsModel) : (runMeta.model ?? metadata.model ?? settingsModel);
+  const wasAnalyzing = phase === 'analyzing';
   const copy = describeError(code, message, { provider, model, retryAfterSeconds: resolveRetryAfter(payload ?? {}) })!;
 
   stopElapsed();
   clearRetryCountdown();
   phase = 'error';
-  if (payload && 'sent' in payload) {
-    runMeta.sendState = payload.sent === null ? 'not-sent' : 'sent';
+  if (notSent && wasAnalyzing) {
+    // This capture stopped before sending: describe it, not the previous run.
+    runMeta = { capturedAt: runMeta.capturedAt, width: runMeta.width, height: runMeta.height, shield: runMeta.shield, sendState: 'not-sent', sent: null, provider, model };
+  } else if (!notSent && payload && 'sent' in payload) {
+    runMeta.sendState = 'sent';
     runMeta.sent = payload.sent;
   } else if (runMeta.sendState === 'sending') {
     runMeta.sendState = 'sent';
   }
+  // Blocked before any capture (no key): the side pane still describes the last result, so leave it.
   renderRunMeta();
   byId('error-title')!.textContent = copy.title;
   const body = byId('error-body');
@@ -479,11 +560,21 @@ function showError(payload: ErrorPayload) {
     button.addEventListener('click', () => runErrorAction(action));
     return button;
   }) ?? []);
+  // An error never costs the user their last good result.
+  if (lastResult && lastResultView) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'btn btn-ghost';
+    back.textContent = 'Back to last result';
+    back.addEventListener('click', () => restorePreviousView('Showing the last result'));
+    actions?.append(back);
+  }
   showView('error');
   updateConfidence(null);
-  setStatus('error', copy.title);
+  // Terse: the focused panel title is what gets read out, so the status bar doesn't repeat it.
+  setStatus('error', copy.status);
   const retryButton = actions?.querySelector<HTMLButtonElement>('[data-action="retry"]');
-  if (retryButton && copy.retryAfterSeconds) startRetryCountdown(retryButton, copy.retryAfterSeconds, copy.title);
+  if (retryButton && copy.retryAfterSeconds) startRetryCountdown(retryButton, copy.retryAfterSeconds);
   updateControls();
   // Move focus to the error so keyboard and screen-reader users land on it.
   const title = byId('error-title');
@@ -518,6 +609,12 @@ function onProcessing(payload: ProcessingPayload) {
   const stage = payload?.stage;
   if (stage === 'cancelled') {
     restorePreviousView('Ready');
+    return;
+  }
+  if (stage === 'sending') {
+    if (phase !== 'analyzing') return;
+    runMeta.sent = payload.sent ?? null;
+    renderRunMeta();
     return;
   }
   if (welcome) welcome.hidden = true;
@@ -592,6 +689,7 @@ function renderResult(response: ResultPayload, statusOverride?: string) {
     completionTokens: meta?.completionTokens,
   };
   lastResultView = { screenshot: currentScreenshot, meta: { ...runMeta } };
+  saveLastResult();
   renderRunMeta();
 
   filterSeverity = 'all';
@@ -601,13 +699,13 @@ function renderResult(response: ResultPayload, statusOverride?: string) {
   renderNotesTab(data);
   renderRawTab(response);
   showView('results');
-  switchTab('summary');
+  switchTab(landingTab());
   updateConfidence(data.confidence);
   resetFeedback();
-  // Provider, model and duration live in the side pane; the status line summarizes the outcome.
-  const issueCount = data.issues?.length ?? 0;
-  const outcome = issueCount ? `Analysis complete · ${issueCount} issue${issueCount === 1 ? '' : 's'}` : 'Analysis complete';
-  setStatus(statusOverride ? 'idle' : 'success', statusOverride ?? outcome);
+  // The tab badge carries the issue count; the status says where the image went and how long it took.
+  const where = joinDetail(providerLabel(runMeta.provider) ? `Sent to ${providerLabel(runMeta.provider)}` : undefined,
+    typeof runMeta.durationMs === 'number' && runMeta.durationMs > 0 ? formatSeconds(runMeta.durationMs) : undefined);
+  setStatus(statusOverride ? 'idle' : 'success', statusOverride ?? 'Analysis complete', where);
   updateControls();
 }
 
@@ -629,8 +727,41 @@ function switchTab(name: TabName, focus = false) {
   }
 }
 
+const TAB_PREF_KEY = 'screenshot-ai.result-tab';
+const isTabName = (value: unknown): value is TabName => TABS.includes(value as TabName);
+
+/** The result view the user last picked by hand; the next result opens on it when it has content. */
+let preferredTab: TabName | null = (() => {
+  try {
+    const stored = localStorage.getItem(TAB_PREF_KEY);
+    return isTabName(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+})();
+
+/** A user's explicit tab choice: switch and remember it. */
+function chooseTab(name: TabName, focus = false) {
+  preferredTab = name;
+  try { localStorage.setItem(TAB_PREF_KEY, name); } catch { /* storage unavailable: in-memory only */ }
+  switchTab(name, focus);
+}
+
+/** A panel has content unless it rendered only its empty state. */
+function tabHasContent(name: TabName): boolean {
+  const panel = byId(`content-${name}`);
+  return !!panel && !!panel.firstElementChild && !panel.firstElementChild.classList.contains('empty-state');
+}
+
+/** Where a fresh result opens: the remembered tab if it has content, else Issues for high severity, else Answer. */
+function landingTab(): TabName {
+  if (preferredTab && tabHasContent(preferredTab)) return preferredTab;
+  if (issues.some(issue => issue.severity === 'high')) return 'issues';
+  return 'summary';
+}
+
 function setupTabs() {
-  TABS.forEach(tab => byId(`tab-${tab}`)?.addEventListener('click', () => switchTab(tab)));
+  TABS.forEach(tab => byId(`tab-${tab}`)?.addEventListener('click', () => chooseTab(tab)));
   byId('tab-summary')?.closest('[role="tablist"]')?.addEventListener('keydown', event => {
     const keyEvent = event as KeyboardEvent;
     const current = TABS.findIndex(tab => byId(`tab-${tab}`) === document.activeElement);
@@ -643,7 +774,7 @@ function setupTabs() {
     } as Record<string, number>)[keyEvent.key];
     if (next === undefined) return;
     keyEvent.preventDefault();
-    switchTab(TABS[next], true);
+    chooseTab(TABS[next], true);
   });
 }
 
@@ -772,11 +903,13 @@ function renderIssueList(focusFilter?: string) {
       .map(key => `<button type="button" class="chip" data-filter="${key}" aria-pressed="${filterSeverity === key}">${key === 'all' ? 'All' : SEVERITY_LABEL[key]} (${counts[key]})</button>`)
       .join('')}</div>`
     : '';
-  const hasDisclosures = issues.some(issue => issue.evidence || issue.suggestion);
+  // The fix is always shown inline; only evidence sits behind a disclosure.
+  const hasDisclosures = issues.some(issue => issue.evidence);
   const toolbar = `<div class="issues-toolbar"><span class="issues-count">${summary}</span>`
     + `<span class="issues-sort"><label class="issues-sort-label" for="issues-sort">Sort</label>`
     + `<select id="issues-sort" class="select" aria-label="Sort issues"><option value="severity"${sortMode === 'severity' ? ' selected' : ''}>Severity</option><option value="type"${sortMode === 'type' ? ' selected' : ''}>Type</option></select></span>`
     + (hasDisclosures ? `<button type="button" id="expand-all" class="btn btn-ghost btn-sm">${allExpanded ? 'Collapse all' : 'Expand all'}</button>` : '')
+    + (visibleIssues.some(issue => issue.suggestion) ? '<button type="button" id="copy-all-fixes" class="btn btn-ghost btn-sm">Copy all fixes</button>' : '')
     + `${chips}</div>`;
 
   content.innerHTML = `${toolbar}<div class="issue-list">${visibleIssues.map(renderIssueCard).join('')}</div>`;
@@ -789,14 +922,18 @@ function renderDisclosure(id: string, label: string, text: string): string {
 }
 
 function renderIssueCard(issue: NormalizedIssue, index: number): string {
+  // Screen readers get the title without markdown marks.
+  const plainTitle = issue.title.replace(/[`*]/g, '');
   return `<article class="issue-card" data-severity="${issue.severity}">`
     + `<header class="issue-head"><span class="sev sev-${issue.severity}">${SEVERITY_LABEL[issue.severity]}</span>`
-    + `<span class="issue-type">${escapeHtml(issue.type)}</span><h3 class="issue-title">${escapeHtml(issue.title)}</h3></header>`
-    + `<div class="issue-foot"><button type="button" class="btn btn-ghost btn-sm copy-issue" data-issue-index="${index}" aria-label="Copy issue: ${escapeHtml(issue.title)}">Copy</button></div>`
-    + (issue.statement !== issue.title ? `<p class="issue-statement">${escapeHtml(issue.statement)}</p>` : '')
+    + `<span class="issue-type">${escapeHtml(issue.type)}</span>`
+    // One copy control per card: it copies the whole issue, fix included.
+    + `<button type="button" class="btn btn-ghost btn-sm copy-issue" data-issue-index="${index}" aria-label="Copy issue: ${escapeHtml(plainTitle)}">Copy</button>`
+    + `<h3 class="issue-title">${formatInline(issue.title)}</h3></header>`
+    + (issue.statement !== issue.title ? `<p class="issue-statement">${formatInline(issue.statement)}</p>` : '')
     + (issue.details ? `<p class="issue-details">${escapeHtml(issue.details)}</p>` : '')
+    + (issue.suggestion ? `<div class="issue-fix"><div class="issue-fix-label">Fix</div><p class="issue-fix-text">${formatInline(issue.suggestion)}</p></div>` : '')
     + (issue.evidence ? renderDisclosure(`issue-${index}-evidence`, 'Evidence', issue.evidence) : '')
-    + (issue.suggestion ? renderDisclosure(`issue-${index}-fix`, 'Suggested fix', issue.suggestion) : '')
     + '</article>';
 }
 
@@ -826,6 +963,12 @@ function setupIssuesTab() {
       allExpanded = !allExpanded;
       content.querySelectorAll<HTMLElement>('.disclosure-toggle').forEach(toggle => setDisclosure(toggle, allExpanded));
       target.textContent = allExpanded ? 'Collapse all' : 'Expand all';
+    } else if (target.id === 'copy-all-fixes') {
+      const fixes = visibleIssues.filter(issue => issue.suggestion);
+      if (fixes.length) {
+        const markdown = fixes.map(issue => `- **${issue.title}**: ${issue.suggestion}`).join('\n');
+        void copyText(markdown, `Copied ${fixes.length} fix${fixes.length === 1 ? '' : 'es'}`);
+      }
     } else if (target.classList.contains('copy-issue')) {
       const issue = visibleIssues[Number(target.dataset.issueIndex)];
       if (issue) void copyText(formatIssueText(issue), 'Copied issue');
@@ -1091,6 +1234,7 @@ function updateViewerTransform() {
   if (!viewerImage) return;
   // CSSOM property (not markup): pan and zoom are continuous values.
   viewerImage.style.transform = `translate(${viewerPanX}px, ${viewerPanY}px) scale(${viewerZoom})`;
+  placeViewerRegions();
   if (viewerZoomLevel) viewerZoomLevel.textContent = `${Math.round(viewerZoom * 100)}%`;
 }
 
@@ -1106,12 +1250,51 @@ function resetViewer() {
   updateViewerTransform();
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** Outline the areas the secret check covered, in the image's own pixel space. */
+function drawViewerRegions() {
+  const overlay = byId('viewer-regions');
+  const caption = byId('viewer-caption');
+  const regions = runMeta.shield?.regions ?? [];
+  if (!overlay || !viewerImage) return;
+  overlay.replaceChildren();
+  overlay.setAttribute('viewBox', `0 0 ${viewerImage.naturalWidth || 1} ${viewerImage.naturalHeight || 1}`);
+  for (const r of regions) {
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', String(r.x));
+    rect.setAttribute('y', String(r.y));
+    rect.setAttribute('width', String(r.w));
+    rect.setAttribute('height', String(r.h));
+    overlay.append(rect);
+  }
+  overlay.toggleAttribute('hidden', !regions.length);
+  if (caption) {
+    caption.hidden = !regions.length;
+    caption.textContent = regions.length ? `${regions.length} ${regions.length === 1 ? 'area' : 'areas'} covered before sending` : '';
+  }
+  placeViewerRegions();
+}
+
+/** Keep the overlay on the image's layout box with the same pan and zoom. */
+function placeViewerRegions() {
+  const overlay = byId('viewer-regions');
+  if (!overlay || !viewerImage || overlay.hasAttribute('hidden')) return;
+  overlay.style.left = `${viewerImage.offsetLeft}px`;
+  overlay.style.top = `${viewerImage.offsetTop}px`;
+  overlay.style.width = `${viewerImage.offsetWidth}px`;
+  overlay.style.height = `${viewerImage.offsetHeight}px`;
+  overlay.style.transform = viewerImage.style.transform;
+}
+
 function openScreenshotViewer() {
   if (!screenshotViewer || !viewerImage || !currentScreenshot) return;
   viewerReturnFocus = document.activeElement as HTMLElement | null;
   viewerImage.src = currentScreenshot;
   resetViewer();
   screenshotViewer.hidden = false;
+  if (viewerImage.complete) drawViewerRegions();
+  else viewerImage.addEventListener('load', drawViewerRegions, { once: true });
   byId('viewer-close')?.focus();
 }
 
@@ -1130,6 +1313,7 @@ function setupScreenshotViewer() {
   byId('viewer-zoom-out')?.addEventListener('click', () => setZoom(viewerZoom / 1.2));
   byId('viewer-reset')?.addEventListener('click', resetViewer);
   byId('viewer-close')?.addEventListener('click', closeScreenshotViewer);
+  window.addEventListener('resize', placeViewerRegions);
   screenshotViewer.querySelector('.screenshot-viewer-overlay')?.addEventListener('click', closeScreenshotViewer);
 
   viewerContent.addEventListener('wheel', event => {
@@ -1219,6 +1403,33 @@ async function loadShortcutSetting() {
     console.error('Failed to read shortcut setting:', error);
   }
   document.querySelectorAll<HTMLElement>('.welcome-note').forEach(note => { note.hidden = !singleKeyShortcuts; });
+  // Hide the single-key hints and drop them from aria-keyshortcuts; the chord shortcut stays.
+  document.body.classList.toggle('single-keys-off', !singleKeyShortcuts);
+  captureBtn.setAttribute('aria-keyshortcuts', `Control+Shift+S Meta+Shift+S${singleKeyShortcuts ? ' C' : ''}`);
+  // Tabs carry their digit in a tooltip only; an inline digit read as a second count ("Issues 4 2").
+  const setSingleKey = (element: HTMLElement | null, key: string) => {
+    if (!element) return;
+    if (singleKeyShortcuts) {
+      element.setAttribute('aria-keyshortcuts', key);
+      element.title = `Shortcut: ${key}`;
+    } else {
+      element.removeAttribute('aria-keyshortcuts');
+      element.removeAttribute('title');
+    }
+  };
+  TABS.forEach((tab, index) => setSingleKey(byId(`tab-${tab}`), String(index + 1)));
+}
+
+/** Esc stops an analysis in flight, through the same path as the Cancel button. */
+function cancelFromShortcut(event: KeyboardEvent): boolean {
+  if (event.key !== 'Escape' || phase !== 'analyzing' || event.defaultPrevented) return false;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || isShortcutExempt(event.target)) return false;
+  // An open menu or popover owns Escape even when focus has wandered outside it.
+  if (isExportMenuOpen() || (feedbackPopover && !feedbackPopover.hidden)) return false;
+  if (!cancelBtn || cancelBtn.hidden || cancelBtn.disabled) return false;
+  event.preventDefault();
+  cancelBtn.click();
+  return true;
 }
 
 function setupKeyboardShortcuts() {
@@ -1240,21 +1451,26 @@ function setupKeyboardShortcuts() {
       }
       return;
     }
+    // Esc is not a single-character key, so it works whatever singleKeyShortcuts says.
+    if (cancelFromShortcut(event)) return;
+    // Run again sends data off the machine, so it takes a chord, never a single stray key.
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !isShortcutExempt(event.target)) {
+      event.preventDefault();
+      retryFromShortcut();
+      return;
+    }
     if (!singleKeyShortcuts || event.ctrlKey || event.metaKey || event.altKey || isShortcutExempt(event.target)) return;
 
     const key = event.key.toLowerCase();
     if (key === 'c' && !captureBtn.disabled) {
       event.preventDefault();
       captureBtn.click();
-    } else if (key === 'r') {
-      event.preventDefault();
-      retryFromShortcut();
     } else if (key === 'e' && !exportBtn.disabled) {
       event.preventDefault();
       openExportMenu();
     } else if (/^[1-4]$/.test(key) && results && !results.hidden) {
       event.preventDefault();
-      switchTab(TABS[Number(key) - 1], true);
+      chooseTab(TABS[Number(key) - 1], true);
     }
   });
 }
@@ -1265,7 +1481,7 @@ function setupKeyboardShortcuts() {
 
 function setupEventListeners() {
   api.analysis.onProcessing(onProcessing);
-  api.analysis.onScreenshot(payload => receiveScreenshot(payload?.dataUrl ?? ''));
+  api.analysis.onScreenshot(payload => receiveScreenshot(payload?.dataUrl ?? '', payload?.shield));
   api.analysis.onResult(onResult);
   api.analysis.onError(showError);
 
@@ -1277,6 +1493,37 @@ function setupEventListeners() {
     setStatus('working', 'Cancelling…', statusDetail?.textContent ?? '');
     api.analysis.cancel?.();
   });
+}
+
+// Settings opens in this same window, so the last result rides along in sessionStorage and comes back on return.
+const LAST_RESULT_KEY = 'screenshot-ai.last-result';
+
+function saveLastResult() {
+  if (!lastResult || !lastResultView) return;
+  const save = (screenshot: string | null) => sessionStorage.setItem(LAST_RESULT_KEY, JSON.stringify({ result: lastResult, view: { ...lastResultView, screenshot } }));
+  try {
+    save(lastResultView.screenshot);
+  } catch {
+    // Over quota with the image: keep the result without its preview rather than lose it.
+    try { save(null); } catch { /* storage unavailable: in-memory only */ }
+  }
+}
+
+function restoreLastResult(): boolean {
+  try {
+    const raw = sessionStorage.getItem(LAST_RESULT_KEY);
+    if (!raw) return false;
+    const stored = JSON.parse(raw) as { result?: ResultPayload; view?: { screenshot?: unknown; meta?: RunMeta } };
+    if (!stored.result?.success || !stored.result.data || !stored.view?.meta) return false;
+    const screenshot = typeof stored.view.screenshot === 'string' && SCREENSHOT_DATA_URL.test(stored.view.screenshot) ? stored.view.screenshot : null;
+    currentScreenshot = screenshot;
+    setPreview(screenshot);
+    runMeta = { ...stored.view.meta };
+    renderResult(stored.result);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function initialize() {
@@ -1297,7 +1544,8 @@ function initialize() {
   showView('welcome');
   switchTab('summary');
   updateControls();
-  void loadWelcome();
+  const restored = restoreLastResult();
+  void loadWelcome().then(() => { if (restored) updateControls(); });
 }
 
 if (document.readyState === 'loading') {

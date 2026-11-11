@@ -4,7 +4,6 @@
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'" />
     <title>ScreenshotAI</title>
-    <link rel="stylesheet" href="fonts.css" />
     <style>
       /* ---------- Tokens ---------- */
       :root {
@@ -37,7 +36,7 @@
         --shadow-pop: 0 8px 24px rgba(26, 27, 30, 0.12), 0 2px 6px rgba(26, 27, 30, 0.06);
         --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
         --pane: clamp(220px, 30vw, 260px);
-        color-scheme: light;
+        color-scheme: light dark;
       }
 
       /* ---------- Base ---------- */
@@ -130,7 +129,9 @@
       .btn-ghost:active:not(:disabled) { background: var(--border); }
       .btn-ghost[aria-pressed="true"] { background: var(--accent-tint); color: var(--accent); }
 
-      .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+      .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      /* aria-disabled buttons still carry live text (the retry countdown), so they stay readable. */
+      .btn[aria-disabled="true"], .btn[aria-disabled="true"]:hover { background: var(--surface-2); border-color: var(--border); color: var(--ink-2); cursor: not-allowed; }
       .btn-chevron { margin-right: -2px; transition: transform 200ms var(--ease-out); }
       .btn[aria-expanded="true"] .btn-chevron { transform: rotate(180deg); }
 
@@ -282,6 +283,22 @@
         white-space: nowrap;
       }
       .confidence[data-level="low"] { border-color: transparent; background: var(--sev-med-bg); color: var(--sev-med); }
+      .context-chip {
+        display: inline-flex;
+        align-items: center;
+        height: 22px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--ink-2);
+        font-size: 12px;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .context-chip:hover { border-color: var(--border-strong); color: var(--ink); }
+      /* The one blocker that persists across screens: a missing key. */
+      .key-chip { border-color: transparent; background: var(--sev-med-bg); color: var(--sev-med); font-weight: 500; }
+      .key-chip:hover { border-color: var(--sev-med); color: var(--sev-med); }
       .status-actions {
         display: flex;
         align-items: center;
@@ -422,6 +439,22 @@
       .run-meta dt { color: var(--ink-3); }
       .run-meta dd { color: var(--ink); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
       .run-meta dd.mono { font-size: 11.5px; line-height: 18px; }
+      /* Same chevron as Technical details, so every disclosure in the window looks alike. */
+      .sent-files summary { display: inline-flex; align-items: center; gap: 7px; list-style: none; cursor: pointer; color: var(--ink); text-decoration: underline dotted var(--ink-3); text-underline-offset: 3px; }
+      .sent-files summary::-webkit-details-marker { display: none; }
+      .sent-files summary::before {
+        content: "";
+        flex: none;
+        width: 5px; height: 5px;
+        border-right: 1.5px solid var(--ink-3);
+        border-bottom: 1.5px solid var(--ink-3);
+        transform: rotate(-45deg);
+        transition: transform 200ms var(--ease-out);
+      }
+      .sent-files[open] summary::before { transform: rotate(45deg); }
+      .sent-files summary:hover { color: var(--accent); }
+      .sent-files ul { list-style: none; margin: 6px 0 0; padding: 0 0 0 8px; border-left: 2px solid var(--border); max-height: 132px; overflow-y: auto; }
+      .sent-files li { font-size: 11.5px; line-height: 18px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       @container (max-width: 210px) {
         .run-meta-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
         .run-meta dt { font-size: 11px; }
@@ -598,6 +631,8 @@
       }
       .tab-count:empty { display: none; }
       .tab[aria-selected="true"] .tab-count { background: var(--accent-tint); color: var(--accent); }
+      /* Single-key shortcuts off (WCAG 2.1.4): their hints go too. */
+      .single-keys-off .single-key { display: none; }
 
       .tab-panel {
         flex: 1;
@@ -760,9 +795,11 @@
       .issues-sort-label { color: var(--ink-3); font-size: 12px; }
       .issues-toolbar .chip-group { flex-basis: 100%; }
       .issue-list { max-width: 76ch; }
-      .issue-card { position: relative; padding: 16px 0; border-bottom: 1px solid var(--border); }
+      .issue-card { padding: 16px 0; border-bottom: 1px solid var(--border); }
       .issue-card:last-child { border-bottom: 0; }
-      .issue-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding-right: 64px; }
+      .issue-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+      /* The copy control ends the meta row; the title wraps below at full width. */
+      .issue-head .copy-issue { margin-left: auto; }
       .issue-title {
         flex-basis: 100%;
         margin-top: 4px;
@@ -800,6 +837,9 @@
       }
       .issue-statement { margin-top: 4px; color: var(--ink-2); line-height: 1.6; text-wrap: pretty; }
       .issue-details { margin-top: 4px; color: var(--ink-3); font-size: 13px; line-height: 1.6; }
+      .issue-fix { margin-top: 10px; padding-left: 12px; border-left: 2px solid var(--border-strong); }
+      .issue-fix-label { margin-bottom: 2px; color: var(--ink-3); font-size: 12px; font-weight: 500; }
+      .issue-fix-text { color: var(--ink); line-height: 1.6; text-wrap: pretty; }
 
       .disclosure { margin-top: 6px; }
       .disclosure + .disclosure { margin-top: 0; }
@@ -852,8 +892,10 @@
       .disclosure-body > .code-block { padding: 0; }
       .disclosure-body > * + * { margin-top: 6px; }
 
-      .issue-foot { position: absolute; top: 12px; right: 0; display: flex; }
-      .copy-issue { color: var(--ink-3); }
+      /* Quiet at rest, full on hover or focus; always reachable, never display:none. */
+      /* Full --ink-3 at rest (5.3:1 light, 6.4:1 dark): a real control, quiet by colour, not by fading. */
+      .copy-issue { color: var(--ink-3); transition: color 120ms ease; }
+      .copy-issue:hover { color: var(--ink); }
 
       /* Notes */
       .note { max-width: 70ch; padding: 14px 0; border-bottom: 1px solid var(--border); }
@@ -956,7 +998,24 @@
         user-select: none;
         pointer-events: none;
       }
-      .viewer-regions-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      /* Covered areas: a dashed outline drawn over the already-covered image, so the claim can be checked. */
+      .viewer-regions { position: absolute; pointer-events: none; overflow: visible; }
+      .viewer-regions[hidden] { display: none; }
+      .viewer-regions rect { fill: none; stroke: #f5b544; stroke-width: 2; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+      .viewer-heading { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+      .viewer-caption { color: #c9cacf; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .meta-link {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--ink);
+        font: inherit;
+        text-align: left;
+        text-decoration: underline dotted var(--ink-3);
+        text-underline-offset: 3px;
+        cursor: pointer;
+      }
+      .meta-link:hover { color: var(--accent); }
 
       /* ---------- Narrow windows ---------- */
       @media (max-width: 600px) {
@@ -974,16 +1033,78 @@
           scroll-behavior: auto !important;
         }
       }
+
+      /* ---------- Dark theme (follows the OS) ----------
+         Warm-grey surfaces, one lifted accent with dark text on it,
+         severity pairs as deep tints with light text. */
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #191917;
+          --surface: #20201e;
+          --surface-2: #2a2a27;
+          --border: #363632;
+          --border-strong: #52524b;
+          --ink: #ececea;
+          --ink-2: #c4c4be;
+          --ink-3: #a2a29b;
+          --accent: #8fa2f0;
+          --accent-hover: #a6b5f3;
+          --accent-press: #bcc8f6;
+          --accent-tint: #252b45;
+          --on-accent: #111318;
+          --selection: #34407a;
+          --sev-high: #f4998f;
+          --sev-high-bg: #3b2321;
+          --sev-med: #e8b768;
+          --sev-med-bg: #362b18;
+          --sev-low: #a2bcde;
+          --sev-low-bg: #212c39;
+          --ok: #80cf9d;
+          --ok-bg: #1c3426;
+          --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+        }
+        .btn-primary,
+        .btn-primary:hover:not(:disabled) { color: var(--on-accent); }
+        .btn-primary .kbd {
+          border-color: rgba(17, 19, 24, 0.28);
+          background: rgba(17, 19, 24, 0.1);
+          color: var(--on-accent);
+        }
+        .select {
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a2a29b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+        }
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(143, 162, 240, 0.45); }
+          100% { box-shadow: 0 0 0 7px rgba(143, 162, 240, 0); }
+        }
+        /* Toast stays inverted: light chip, dark text */
+        .toast {
+          color: var(--bg);
+          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+        /* Viewer is already dark; sink it to match the app chrome */
+        .screenshot-viewer-overlay { background: rgba(8, 8, 7, 0.82); }
+        .screenshot-viewer-container {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+        }
+        .screenshot-viewer-header { border-bottom-color: var(--border); }
+        .screenshot-viewer-header h2 { color: var(--ink); }
+        .viewer-btn, .viewer-zoom-level { color: var(--ink-2); }
+        .viewer-btn:hover { background: var(--surface-2); color: var(--ink); }
+        .viewer-btn:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+      }
     </style>
   </head>
   <body>
     <header class="app-header">
       <h1 class="wordmark">ScreenshotAI</h1>
       <div class="header-actions">
-        <button id="capture-btn" class="btn btn-primary" type="button">
+        <button id="capture-btn" class="btn btn-primary" type="button" aria-keyshortcuts="Control+Shift+S Meta+Shift+S C">
           <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
           Capture
-          <kbd class="kbd" id="capture-shortcut">Ctrl+Shift+S</kbd>
+          <kbd class="kbd" id="capture-shortcut" aria-hidden="true">Ctrl+Shift+S</kbd>
         </button>
         <a id="settings-link" class="btn btn-secondary" href="settings.html">
           <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -996,13 +1117,16 @@
       <span id="status-icon" class="status-dot is-idle" aria-hidden="true"></span>
       <span id="status-text" role="status" aria-live="polite">Ready</span>
       <span id="status-detail" class="status-detail mono"></span>
+      <a id="key-chip" class="context-chip key-chip" href="settings.html#api-keys" hidden>API key needed</a>
+      <a id="context-chip" class="context-chip" href="settings.html#context" hidden>Workspace context on</a>
       <button id="cancel-btn" class="btn btn-ghost btn-sm" type="button" hidden>Cancel</button>
       <span id="confidence-badge" class="confidence" hidden></span>
       <div class="status-actions">
-        <button id="run-again-btn" class="btn btn-secondary btn-sm" type="button" disabled>
+        <button id="run-again-btn" class="btn btn-secondary btn-sm" type="button" aria-keyshortcuts="Control+Enter Meta+Enter" aria-describedby="run-again-desc" disabled>
           Run again
-          <kbd class="kbd">R</kbd>
+          <kbd class="kbd" id="run-again-shortcut" aria-hidden="true">Ctrl+Enter</kbd>
         </button>
+        <span id="run-again-desc" class="visually-hidden">Sends the same image again to your AI provider.</span>
         <div class="menu">
           <button id="export-btn" class="btn btn-secondary btn-sm" type="button" disabled aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu-dropdown">
             Export
@@ -1016,10 +1140,10 @@
           </div>
         </div>
         <div id="feedback-buttons" class="feedback" hidden>
-          <button id="feedback-positive" class="btn btn-ghost btn-icon" type="button" aria-label="Helpful" aria-pressed="false">
+          <button id="feedback-positive" class="btn btn-ghost btn-icon" type="button" aria-label="Helpful" title="Helpful" aria-pressed="false">
             <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>
           </button>
-          <button id="feedback-negative" class="btn btn-ghost btn-icon" type="button" aria-label="Not helpful" aria-pressed="false">
+          <button id="feedback-negative" class="btn btn-ghost btn-icon" type="button" aria-label="Not helpful" title="Not helpful: tell us what was wrong" aria-pressed="false">
             <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>
           </button>
           <div id="feedback-popover" class="popover" role="dialog" aria-labelledby="feedback-title" aria-describedby="feedback-note" hidden>
@@ -1066,12 +1190,12 @@
           <ol class="welcome-steps">
             <li><span>Click Capture or press <kbd class="kbd" data-shortcut>Ctrl+Shift+S</kbd>.</span></li>
             <li><span>Drag around the part of the screen you want explained. Press <kbd class="kbd">Esc</kbd> to cancel.</span></li>
-            <li><span>The selected image is sent to <strong id="welcome-provider">your AI provider</strong> for analysis.<span id="welcome-context" hidden> Workspace context is included; change that in <a href="settings.html#context">Settings &gt; Context</a>.</span></span></li>
+            <li><span>The selected image is sent to <strong id="welcome-provider">your AI provider</strong> for analysis. <span id="welcome-shield-on">Before anything is sent, ScreenshotAI checks the image on this computer for API keys, passwords and tokens, and lets you review what it covered.</span><span id="welcome-shield-off" hidden>The secret check is off in <a href="settings.html#privacy">Settings &gt; Privacy</a>, so keep keys and passwords out of the region.</span><span id="welcome-context" hidden> Workspace context is included; change that in <a href="settings.html#context">Settings &gt; Context</a>.</span></span></li>
           </ol>
-          <p class="welcome-note">Shortcuts: <kbd class="kbd">C</kbd> capture, <kbd class="kbd">R</kbd> run again, <kbd class="kbd">E</kbd> export, <kbd class="kbd">1</kbd>–<kbd class="kbd">4</kbd> switch result views.</p>
+          <p class="welcome-note">Shortcuts: <kbd class="kbd">C</kbd> capture, <kbd class="kbd">E</kbd> export, <kbd class="kbd">1</kbd>–<kbd class="kbd">4</kbd> switch result views.</p>
         </section>
 
-        <section id="error-panel" class="error-panel" role="alert" aria-labelledby="error-title" hidden>
+        <section id="error-panel" class="error-panel" aria-labelledby="error-title" hidden>
           <svg class="icon error-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
           <h2 id="error-title" class="error-title"></h2>
           <p id="error-body" class="error-body"></p>
@@ -1084,10 +1208,10 @@
 
         <div id="results" class="results" hidden>
           <div class="tabs" role="tablist" aria-label="Result views">
-            <button id="tab-summary" class="tab" type="button" role="tab" aria-selected="true" aria-controls="content-summary" tabindex="0">Answer</button>
-            <button id="tab-issues" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-issues" tabindex="-1">Issues <span id="badge-issues" class="tab-count"></span></button>
-            <button id="tab-notes" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-notes" tabindex="-1">Suggestions <span id="badge-notes" class="tab-count"></span></button>
-            <button id="tab-raw" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-raw" tabindex="-1">JSON</button>
+            <button id="tab-summary" class="tab" type="button" role="tab" aria-selected="true" aria-controls="content-summary" aria-keyshortcuts="1" tabindex="0">Answer</button>
+            <button id="tab-issues" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-issues" aria-keyshortcuts="2" tabindex="-1">Issues <span id="badge-issues" class="tab-count"></span></button>
+            <button id="tab-notes" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-notes" aria-keyshortcuts="3" tabindex="-1">Suggestions <span id="badge-notes" class="tab-count"></span></button>
+            <button id="tab-raw" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-raw" aria-keyshortcuts="4" tabindex="-1">JSON</button>
           </div>
           <div id="content-summary" class="tab-panel" role="tabpanel" aria-labelledby="tab-summary" tabindex="0"></div>
           <div id="content-issues" class="tab-panel" role="tabpanel" aria-labelledby="tab-issues" tabindex="0" hidden></div>
@@ -1103,7 +1227,10 @@
       <div class="screenshot-viewer-overlay"></div>
       <div class="screenshot-viewer-container">
         <div class="screenshot-viewer-header">
-          <h2 id="viewer-title">Screenshot</h2>
+          <div class="viewer-heading">
+            <h2 id="viewer-title">Screenshot</h2>
+            <span id="viewer-caption" class="viewer-caption" hidden></span>
+          </div>
           <div class="viewer-controls">
             <button id="viewer-zoom-out" class="viewer-btn" type="button" aria-label="Zoom out" title="Zoom out (-)">
               <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg>
@@ -1122,7 +1249,7 @@
         </div>
         <div id="viewer-content" class="screenshot-viewer-content">
           <img id="viewer-image" alt="Captured screenshot" draggable="false">
-          <canvas id="viewer-regions" class="viewer-regions-canvas"></canvas>
+          <svg id="viewer-regions" class="viewer-regions" aria-hidden="true" preserveAspectRatio="none" hidden></svg>
         </div>
       </div>
     </div>

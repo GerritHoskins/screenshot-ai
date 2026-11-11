@@ -78,7 +78,7 @@ export const FEEDBACK_COMMENT_MAX_LENGTH = 500;
 export function validateDesktopIpcArgs(channel: string, args: unknown[]): boolean {
   const provider = (value: unknown) => value === 'openai' || value === 'anthropic';
   const repoProvider = (value: unknown) => value === 'github' || value === 'gitlab';
-  const noArgs = ['capture:start', 'analysis:retry', 'analysis:cancel', 'settings:getPromptStatus', 'settings:getPromptText', 'settings:clearPrompt', 'settings:getWorkspaceContext', 'settings:getContextOptions', 'settings:openLogsFolder', 'settings:resetAllSettings', 'settings:listContextSources', 'settings:pickWorkspaceFolder', 'settings:getMcpStatus', 'settings:copyMcpSetupCommand', 'settings:resetMcpToken'];
+  const noArgs = ['capture:start', 'analysis:retry', 'analysis:cancel', 'settings:getPromptStatus', 'settings:getPromptText', 'settings:clearPrompt', 'settings:getWorkspaceContext', 'settings:getContextOptions', 'settings:openLogsFolder', 'settings:resetAllSettings', 'settings:listContextSources', 'settings:pickWorkspaceFolder', 'settings:getMcpStatus', 'settings:copyMcpSetupCommand', 'settings:resetMcpToken', 'settings:getShieldStatus'];
   if (noArgs.includes(channel)) return args.length === 0;
   if (['settings:getApiKeyStatus', 'settings:deleteApiKey', 'settings:getApiKeyTestStatus'].includes(channel)) return args.length === 1 && provider(args[0]);
   if (['settings:storeApiKey', 'settings:validateApiKey', 'settings:testApiKey'].includes(channel)) return args.length === 2 && provider(args[0]) && text(args[1], 8192);
@@ -93,6 +93,11 @@ export function validateDesktopIpcArgs(channel: string, args: unknown[]): boolea
     if (key === 'maxTokens') return Number.isInteger(value) && Number(value) > 0 && Number(value) <= 32768;
     if (key === 'temperature') return typeof value === 'number' && value >= 0 && value <= 2;
     return key === 'timeout' && Number.isInteger(value) && Number(value) > 0 && Number(value) <= 300000;
+  }
+  if (channel === 'settings:setShieldOptions') {
+    const value = args[0];
+    return args.length === 1 && record(value) && Object.keys(value).length > 0
+      && Object.entries(value).every(([key, entry]) => ['enabled', 'alwaysPreview'].includes(key) && typeof entry === 'boolean');
   }
   if (channel === 'settings:importPrompt') return args.length === 1 && text(args[0], 1000000);
   if (['settings:setPromptEnabled', 'settings:setMcpEnabled'].includes(channel)) return args.length === 1 && typeof args[0] === 'boolean';

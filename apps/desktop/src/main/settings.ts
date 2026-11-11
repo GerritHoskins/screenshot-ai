@@ -27,6 +27,7 @@ import { storeRepoToken, validateRepoToken, testRepoToken, getAuthStatus, delete
 import { invalidateCache } from '@context/repo-cache';
 import { startGitHubDeviceFlow, startGitLabDeviceFlow, pollGitHubToken, pollGitLabToken } from '@security/oauth';
 import { applyMcpSettings, copyMcpSetupCommand, getMcpStatus, resetMcpToken } from './mcp';
+import { getShieldStatus } from './shield';
 
 const logger = getLogger();
 
@@ -590,6 +591,16 @@ export function registerSettingsHandlers(rendererDirectory: string): void {
   // ============================================================================
 
   handle('settings:getMcpStatus', async () => getMcpStatus());
+
+  // Secret shield
+  handle('settings:getShieldStatus', async () => getShieldStatus());
+  handle('settings:setShieldOptions', async (_event, options: { enabled?: boolean; alwaysPreview?: boolean }) => {
+    const settings = getSettings();
+    settings.shield = { ...settings.shield, ...options };
+    saveSettings(settings);
+    logger.info('settings', 'Secret shield updated', options);
+    return getShieldStatus();
+  });
 
   handle('settings:setMcpEnabled', async (_event, enabled: boolean) => {
     const settings = getSettings();
