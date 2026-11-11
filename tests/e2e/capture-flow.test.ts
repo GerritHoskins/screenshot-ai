@@ -42,7 +42,8 @@ describe('Built desktop capture UI', () => {
     // The E2E profile starts with an empty keychain.
     await app.page.locator('#welcome-key-warning').waitFor();
     expect(await app.page.locator('#welcome-key-warning a').getAttribute('href')).toBe('settings.html#api-keys');
-    expect(await app.page.locator('#capture-btn').getAttribute('class')).toContain('btn-secondary');
+    expect(await app.page.locator('#key-chip').isVisible()).toBe(true);
+    expect(await app.page.locator('#key-chip').getAttribute('href')).toBe('settings.html#api-keys');
     await app.page.locator('#capture-btn').click();
     await app.page.locator('#error-panel').waitFor();
     expect(await app.page.locator('#error-title').textContent()).toBe('No API key set');
@@ -105,6 +106,24 @@ describe('Built desktop capture UI', () => {
     expect(await cancelCount()).toBe(1);
   });
 
+  it('re-sends only on Ctrl+Enter, never on a single R', async () => {
+    await app.application.evaluate(({ ipcMain }) => {
+      const state = globalThis as unknown as { retryCount: number; retryTracked?: boolean };
+      state.retryCount = 0;
+      if (state.retryTracked) return;
+      state.retryTracked = true;
+      ipcMain.on('analysis:retry', () => { state.retryCount++; });
+    });
+    const retryCount = () => app.application.evaluate(() => (globalThis as unknown as { retryCount: number }).retryCount);
+    await sendToRenderer(app, 'analysis:result', analysisResult());
+    await app.page.locator('#tab-summary').focus();
+    await app.page.keyboard.press('r');
+    expect(await retryCount()).toBe(0);
+    expect(await app.page.locator('#run-again-btn').getAttribute('title')).toMatch(/^Sends the same image again to /);
+    await app.page.keyboard.press('Control+Enter');
+    await expect.poll(retryCount).toBe(1);
+  });
+
   it('ignores single-key shortcuts when the setting is off (WCAG 2.1.4)', async () => {
     await app.page.evaluate(() => window.api.settings.set('singleKeyShortcuts', false));
     try {
@@ -118,9 +137,9 @@ describe('Built desktop capture UI', () => {
       expect(await app.page.locator('#tab-raw').getAttribute('aria-selected')).toBe('false');
 
       // Single-key hints and their aria-keyshortcuts go; the chord shortcut stays.
-      expect(await app.page.locator('#run-again-btn .kbd').isVisible()).toBe(false);
-      expect(await app.page.locator('#tab-raw .tab-key').isVisible()).toBe(false);
-      expect(await app.page.locator('#run-again-btn').getAttribute('aria-keyshortcuts')).toBeNull();
+      // Run again is a chord, not a single key, so its hint stays.
+      expect(await app.page.locator('#run-again-btn').getAttribute('aria-keyshortcuts')).toBe('Control+Enter Meta+Enter');
+      expect(await app.page.locator('#tab-raw').getAttribute('title')).toBeNull();
       expect(await app.page.locator('#tab-raw').getAttribute('aria-keyshortcuts')).toBeNull();
       expect(await app.page.locator('#capture-btn').getAttribute('aria-keyshortcuts')).toBe('Control+Shift+S Meta+Shift+S');
 
@@ -137,8 +156,7 @@ describe('Built desktop capture UI', () => {
       await app.page.evaluate(() => window.api.settings.set('singleKeyShortcuts', true));
       await app.page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await app.page.waitForFunction(() => document.querySelector('#tab-raw')?.getAttribute('aria-keyshortcuts') === '4');
-      expect(await app.page.locator('#tab-raw .tab-key').isVisible()).toBe(true);
-      expect(await app.page.locator('#run-again-btn').getAttribute('aria-keyshortcuts')).toBe('R');
+      expect(await app.page.locator('#tab-raw').getAttribute('title')).toBe('Shortcut: 4');
       expect(await app.page.locator('#capture-btn').getAttribute('aria-keyshortcuts')).toBe('Control+Shift+S Meta+Shift+S C');
     } finally {
       await app.page.evaluate(() => window.api.settings.set('singleKeyShortcuts', true));

@@ -68,7 +68,7 @@ export interface ExposedAPI {
   };
   analysis: {
     onProcessing: (callback: (payload: AnalysisProcessingPayload) => void) => void;
-    onScreenshot: (callback: (payload: { dataUrl: string }) => void) => void;
+    onScreenshot: (callback: (payload: { dataUrl: string; shield?: { status: string; found: number; covered: number } | null }) => void) => void;
     onResult: (callback: (response: AIResponse<ScreenshotAnalysis>) => void) => void;
     onError: (callback: (payload: AnalysisErrorPayload) => void) => void;
     retry: () => void;

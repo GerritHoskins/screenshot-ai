@@ -538,3 +538,18 @@ export function describeError(code: string, message: string, context: ErrorConte
       };
   }
 }
+
+/** What the local secret check did to one capture (counts only). */
+export interface ShieldSummary { status: 'off' | 'clean' | 'covered' | 'sent-uncovered' | 'unchecked'; found: number; covered: number }
+
+/** "2 areas covered", "Nothing found", "Off": the secret check's result for this capture. */
+export function describeShield(s: ShieldSummary): string {
+  const areas = (n: number) => `${n} ${n === 1 ? 'area' : 'areas'}`;
+  switch (s.status) {
+    case 'off': return 'Off';
+    case 'clean': return 'Nothing found';
+    case 'covered': return `${areas(s.covered)} covered`;
+    case 'sent-uncovered': return `${s.found} found, ${s.covered} covered`;
+    default: return s.covered > 0 ? `Not run · ${areas(s.covered)} covered by you` : 'Not run (scan unavailable)';
+  }
+}

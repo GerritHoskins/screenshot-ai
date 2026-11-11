@@ -3,6 +3,8 @@ import {
   buildReportMarkdown,
   confidenceLevel,
   describeError,
+  describeShield,
+  type ShieldSummary,
   escapeHtml,
   extractAnswer,
   formatAnswer,
@@ -49,7 +51,7 @@ interface RendererApi {
   };
   analysis: {
     onProcessing(callback: (payload: ProcessingPayload) => void): void;
-    onScreenshot(callback: (payload: { dataUrl: string }) => void): void;
+    onScreenshot(callback: (payload: { dataUrl: string; shield?: unknown }) => void): void;
     onResult(callback: (response: ResultPayload) => void): void;
     onError(callback: (payload: ErrorPayload) => void): void;
     retry(): void;
@@ -150,6 +152,8 @@ interface RunMeta {
   /** sending while the request runs; not-sent when it stopped before leaving the machine. */
   sendState?: 'sending' | 'sent' | 'not-sent';
   sent?: SentSummary | null;
+  /** What the local secret check did to this capture (absent for agent captures). */
+  shield?: ShieldSummary;
   provider?: string;
   model?: string;
   durationMs?: number;
@@ -219,12 +223,15 @@ function updateControls() {
   const showingResult = phase === 'success' && !!lastResult;
   // One capture at a time: a second capture would race the request in flight.
   captureBtn.disabled = busy;
-  captureBtn.classList.toggle('btn-primary', !keyMissing);
-  captureBtn.classList.toggle('btn-secondary', keyMissing);
   // In the error view the panel owns the retry action, so the status-bar duplicate steps aside.
   if (phase === 'error' && document.activeElement === runAgainBtn) byId('error-title')?.focus();
   runAgainBtn.hidden = phase === 'error';
   runAgainBtn.disabled = busy || retryBlocked() || !(currentScreenshot || lastResult);
+  // Say where Run again sends the image: it's the one action that leaves the machine without a new capture.
+  const sendTarget = `Sends the same image again to ${providerLabel(settingsProvider ?? runMeta.provider) || 'your AI provider'}.`;
+  runAgainBtn.title = sendTarget;
+  const runAgainDesc = byId('run-again-desc');
+  if (runAgainDesc) runAgainDesc.textContent = sendTarget;
   exportBtn.disabled = !showingResult;
   if (!showingResult) {
     closeExportMenu(false);
@@ -296,10 +303,19 @@ function setPreview(dataUrl: string | null) {
   screenshotPreview.disabled = false;
 }
 
-function receiveScreenshot(dataUrl: string) {
+const SHIELD_STATUSES = ['off', 'clean', 'covered', 'sent-uncovered', 'unchecked'];
+
+function readShieldSummary(value: unknown): ShieldSummary | undefined {
+  const s = value as Partial<ShieldSummary> | null | undefined;
+  if (!s || !SHIELD_STATUSES.includes(String(s.status))) return undefined;
+  const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0);
+  return { status: s.status as ShieldSummary['status'], found: count(s.found), covered: count(s.covered) };
+}
+
+function receiveScreenshot(dataUrl: string, shield?: unknown) {
   if (!SCREENSHOT_DATA_URL.test(dataUrl)) return;
   currentScreenshot = dataUrl;
-  runMeta = { capturedAt: Date.now() };
+  runMeta = { capturedAt: Date.now(), shield: readShieldSummary(shield) };
   setPreview(dataUrl);
   renderRunMeta();
   updateControls();
@@ -343,6 +359,7 @@ function renderRunMeta() {
   const rows: Array<[string, string | undefined, boolean]> = [
     [sendLabel, providerLabel(meta.provider) || undefined, false],
     ['Included', (meta.sendState === 'sent' || meta.sendState === 'sending') && meta.sent ? describeSent(meta.sent) : undefined, false],
+    ['Secret check', meta.shield ? describeShield(meta.shield) : undefined, false],
     ['Model', model, true],
     ['Duration', typeof meta.durationMs === 'number' && meta.durationMs > 0 ? formatSeconds(meta.durationMs) : undefined, true],
     ['Tokens', hasTokens ? formatTokens(meta.promptTokens!, meta.completionTokens!, 'en-US') : undefined, true],
@@ -377,6 +394,8 @@ function syncShortcutLabels() {
   const label = isMac ? '⌘⇧S' : 'Ctrl+Shift+S';
   const capture = byId('capture-shortcut');
   if (capture) capture.textContent = label;
+  const runAgain = byId('run-again-shortcut');
+  if (runAgain) runAgain.textContent = isMac ? '⌘↵' : 'Ctrl+Enter';
   document.querySelectorAll<HTMLElement>('kbd[data-shortcut]').forEach(kbd => { kbd.textContent = label; });
 }
 
@@ -421,7 +440,10 @@ async function loadWelcome() {
   if (keyProvider) keyProvider.textContent = label;
   const warning = byId('welcome-key-warning');
   if (warning) warning.hidden = !keyMissing;
-  if (phase === 'idle' && welcome && !welcome.hidden) setStatus('idle', keyMissing ? 'API key needed' : 'Ready');
+  // Persistent on every screen, so a result view never hides that the next capture can't be sent.
+  const keyChip = byId('key-chip');
+  if (keyChip) keyChip.hidden = !keyMissing;
+  if (phase === 'idle' && welcome && !welcome.hidden) setStatus('idle', keyMissing ? 'Not ready' : 'Ready');
   updateControls();
 }
 
@@ -490,7 +512,7 @@ function showError(payload: ErrorPayload) {
   phase = 'error';
   if (notSent && wasAnalyzing) {
     // This capture stopped before sending: describe it, not the previous run.
-    runMeta = { capturedAt: runMeta.capturedAt, width: runMeta.width, height: runMeta.height, sendState: 'not-sent', sent: null, provider, model };
+    runMeta = { capturedAt: runMeta.capturedAt, width: runMeta.width, height: runMeta.height, shield: runMeta.shield, sendState: 'not-sent', sent: null, provider, model };
   } else if (!notSent && payload && 'sent' in payload) {
     runMeta.sendState = 'sent';
     runMeta.sent = payload.sent;
@@ -1326,12 +1348,17 @@ async function loadShortcutSetting() {
   // Hide the single-key hints and drop them from aria-keyshortcuts; the chord shortcut stays.
   document.body.classList.toggle('single-keys-off', !singleKeyShortcuts);
   captureBtn.setAttribute('aria-keyshortcuts', `Control+Shift+S Meta+Shift+S${singleKeyShortcuts ? ' C' : ''}`);
+  // Tabs carry their digit in a tooltip only; an inline digit read as a second count ("Issues 4 2").
   const setSingleKey = (element: HTMLElement | null, key: string) => {
     if (!element) return;
-    if (singleKeyShortcuts) element.setAttribute('aria-keyshortcuts', key);
-    else element.removeAttribute('aria-keyshortcuts');
+    if (singleKeyShortcuts) {
+      element.setAttribute('aria-keyshortcuts', key);
+      element.title = `Shortcut: ${key}`;
+    } else {
+      element.removeAttribute('aria-keyshortcuts');
+      element.removeAttribute('title');
+    }
   };
-  setSingleKey(runAgainBtn, 'R');
   TABS.forEach((tab, index) => setSingleKey(byId(`tab-${tab}`), String(index + 1)));
 }
 
@@ -1368,15 +1395,18 @@ function setupKeyboardShortcuts() {
     }
     // Esc is not a single-character key, so it works whatever singleKeyShortcuts says.
     if (cancelFromShortcut(event)) return;
+    // Run again sends data off the machine, so it takes a chord, never a single stray key.
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !isShortcutExempt(event.target)) {
+      event.preventDefault();
+      retryFromShortcut();
+      return;
+    }
     if (!singleKeyShortcuts || event.ctrlKey || event.metaKey || event.altKey || isShortcutExempt(event.target)) return;
 
     const key = event.key.toLowerCase();
     if (key === 'c' && !captureBtn.disabled) {
       event.preventDefault();
       captureBtn.click();
-    } else if (key === 'r') {
-      event.preventDefault();
-      retryFromShortcut();
     } else if (key === 'e' && !exportBtn.disabled) {
       event.preventDefault();
       openExportMenu();
@@ -1393,7 +1423,7 @@ function setupKeyboardShortcuts() {
 
 function setupEventListeners() {
   api.analysis.onProcessing(onProcessing);
-  api.analysis.onScreenshot(payload => receiveScreenshot(payload?.dataUrl ?? ''));
+  api.analysis.onScreenshot(payload => receiveScreenshot(payload?.dataUrl ?? '', payload?.shield));
   api.analysis.onResult(onResult);
   api.analysis.onError(showError);
 

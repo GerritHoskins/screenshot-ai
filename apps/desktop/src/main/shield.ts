@@ -31,6 +31,17 @@ export interface ShieldRequest {
   parent: BrowserWindow | null;
   /** Present for captures an agent asked for. */
   agent?: { clientName: string; reason?: string };
+  /** Told what the check did, once per capture that goes on to be sent (never on cancel). */
+  onSummary?: (summary: ShieldSummary) => void;
+}
+
+/** What the secret check did to one capture. Counts only; matched text never leaves this module. */
+export interface ShieldSummary {
+  status: 'off' | 'clean' | 'covered' | 'sent-uncovered' | 'unchecked';
+  /** Areas the scan flagged. */
+  found: number;
+  /** Areas covered in the image that was sent, detected or drawn by the user. */
+  covered: number;
 }
 
 export type ShieldNotice = 'none' | 'scan-failed' | 'scan-unavailable' | 'shield-off';
@@ -81,7 +92,10 @@ function labelFor(rule: string | undefined): string {
  */
 export async function shieldCapture(png: Buffer, request: ShieldRequest): Promise<Buffer | null> {
   const settings = readShieldSettings();
-  if (!settings.enabled && !request.agent) return png;
+  if (!settings.enabled && !request.agent) {
+    request.onSummary?.({ status: 'off', found: 0, covered: 0 });
+    return png;
+  }
 
   let boxes: ShieldBox[] = [];
   let notice: ShieldNotice = settings.enabled ? 'none' : 'shield-off';
@@ -102,7 +116,10 @@ export async function shieldCapture(png: Buffer, request: ShieldRequest): Promis
 
   // Nothing to review: no agent, nothing found, scan completed (or unavailable) and no always-preview.
   const scanFailed = notice === 'scan-failed';
-  if (!request.agent && boxes.length === 0 && !scanFailed && !settings.alwaysPreview) return png;
+  if (!request.agent && boxes.length === 0 && !scanFailed && !settings.alwaysPreview) {
+    request.onSummary?.({ status: notice === 'none' ? 'clean' : 'unchecked', found: 0, covered: 0 });
+    return png;
+  }
 
   const decision = await openPreview({
     dataUrl: `data:image/png;base64,${png.toString('base64')}`,
@@ -122,11 +139,21 @@ export async function shieldCapture(png: Buffer, request: ShieldRequest): Promis
     logger.warn('shield', 'Rejected malformed review result');
     return null;
   }
+  // The review window reports each box's source, so never let it push this below zero.
+  const uncovered = Math.max(0, boxes.length - finalBoxes.filter((b) => b.source === 'detected').length);
+  request.onSummary?.({
+    status: notice === 'shield-off' ? 'off'
+      : uncovered > 0 ? 'sent-uncovered'
+      : notice !== 'none' ? 'unchecked'
+      : finalBoxes.length > 0 ? 'covered' : 'clean',
+    found: boxes.length,
+    covered: finalBoxes.length,
+  });
   logger.info('shield', 'Capture review sent', {
     agent: !!request.agent,
     covered: finalBoxes.length,
     manual: finalBoxes.filter((b) => b.source === 'manual').length,
-    uncovered: boxes.length - finalBoxes.filter((b) => b.source === 'detected').length,
+    uncovered,
   });
   return applyRedactions(png, finalBoxes);
 }

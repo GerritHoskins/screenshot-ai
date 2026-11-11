@@ -3,6 +3,7 @@ import {
   buildReportMarkdown,
   confidenceLevel,
   describeError,
+  describeShield,
   formatAnswer,
   formatAnswerParts,
   formatTokens,
@@ -124,5 +125,17 @@ describe('error copy', () => {
     expect(resolveRetryAfter({ metadata: { retryAfterSeconds: 3 } })).toBe(3);
     expect(resolveRetryAfter({ message: 'Please retry after 20 seconds' })).toBe(20);
     expect(resolveRetryAfter({ message: 'nope' })).toBeUndefined();
+  });
+});
+
+describe('describeShield', () => {
+  it('states what the secret check did, counts only', () => {
+    expect(describeShield({ status: 'off', found: 0, covered: 0 })).toBe('Off');
+    expect(describeShield({ status: 'clean', found: 0, covered: 0 })).toBe('Nothing found');
+    expect(describeShield({ status: 'covered', found: 1, covered: 1 })).toBe('1 area covered');
+    expect(describeShield({ status: 'covered', found: 2, covered: 3 })).toBe('3 areas covered');
+    expect(describeShield({ status: 'sent-uncovered', found: 2, covered: 1 })).toBe('2 found, 1 covered');
+    expect(describeShield({ status: 'unchecked', found: 0, covered: 0 })).toBe('Not run (scan unavailable)');
+    expect(describeShield({ status: 'unchecked', found: 0, covered: 2 })).toBe('Not run · 2 areas covered by you');
   });
 });

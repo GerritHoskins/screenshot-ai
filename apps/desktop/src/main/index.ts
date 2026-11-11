@@ -10,7 +10,7 @@ import { getApiKey } from "@security/keychain";
 import * as fs from "fs";
 import { hardenWindow, isTrustedIpcSender, validateDesktopIpcArgs, SECURE_WEB_PREFERENCES } from "@security/ipc-hardening";
 import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
-import { shieldCapture } from "./shield";
+import { shieldCapture, type ShieldSummary } from "./shield";
 import { initAgentServer, stopAgentServer, McpToolError, AGENT_BUSY_MESSAGE, type AgentBridge } from "./mcp";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -272,9 +272,10 @@ async function runCapture() {
     mainWindow?.webContents.send("analysis:processing", { stage: "capture" });
     
     let image: Buffer | null;
+    let shield: ShieldSummary | null = null;
     try {
       image = await captureScreenSelection();
-      if (image) image = await shieldCapture(image, { parent: mainWindow }); // null = user cancelled the review
+      if (image) image = await shieldCapture(image, { parent: mainWindow, onSummary: (s) => { shield = s; } }); // null = user cancelled the review
     } catch (captureError) {
       isProcessing = false;
       // A failed capture supersedes the previous image: Retry should capture again.
@@ -314,11 +315,10 @@ async function runCapture() {
     lastImage = image;
     logger.info('main', 'Capture successful', { imageSize: image.length });
 
-    // Convert image buffer to data URL for preview
     const screenshotDataUrl = nativeImage.createFromBuffer(image).toDataURL();
     
     // Send screenshot preview to renderer immediately after capture
-    mainWindow?.webContents.send("analysis:screenshot", { dataUrl: screenshotDataUrl });
+    mainWindow?.webContents.send("analysis:screenshot", { dataUrl: screenshotDataUrl, shield });
 
     // Step 2: Analyze with AI (reload service to get latest provider from settings)
     lastFeedback = null; // Reset feedback on new capture

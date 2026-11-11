@@ -297,6 +297,9 @@
         white-space: nowrap;
       }
       .context-chip:hover { border-color: var(--border-strong); color: var(--ink); }
+      /* The one blocker that persists across screens: a missing key. */
+      .key-chip { border-color: transparent; background: var(--sev-med-bg); color: var(--sev-med); font-weight: 500; }
+      .key-chip:hover { border-color: var(--sev-med); color: var(--sev-med); }
       .status-actions {
         display: flex;
         align-items: center;
@@ -617,22 +620,6 @@
       }
       .tab-count:empty { display: none; }
       .tab[aria-selected="true"] .tab-count { background: var(--accent-tint); color: var(--accent); }
-      /* Plain digit, not a box, so it never reads as a second count; shown while the tab bar is in use. */
-      .tab .tab-key {
-        min-width: 0;
-        margin-left: -2px;
-        padding: 0;
-        border: 0;
-        background: none;
-        box-shadow: none;
-        color: var(--ink-3);
-        font-size: 10px;
-        line-height: 15px;
-        vertical-align: super;
-        opacity: 0;
-        transition: opacity 120ms ease-out;
-      }
-      .tabs:hover .tab-key, .tabs:focus-within .tab-key { opacity: 1; }
       /* Single-key shortcuts off (WCAG 2.1.4): their hints go too. */
       .single-keys-off .single-key { display: none; }
 
@@ -895,9 +882,9 @@
       .disclosure-body > * + * { margin-top: 6px; }
 
       /* Quiet at rest, full on hover or focus; always reachable, never display:none. */
-      .copy-issue { color: var(--ink-3); opacity: 0.45; transition: opacity 120ms ease, color 120ms ease; }
-      .issue-card:hover .copy-issue, .issue-card:focus-within .copy-issue { opacity: 1; }
-      @media (hover: none) { .copy-issue { opacity: 1; } }
+      /* Full --ink-3 at rest (5.3:1 light, 6.4:1 dark): a real control, quiet by colour, not by fading. */
+      .copy-issue { color: var(--ink-3); transition: color 120ms ease; }
+      .copy-issue:hover { color: var(--ink); }
 
       /* Notes */
       .note { max-width: 70ch; padding: 14px 0; border-bottom: 1px solid var(--border); }
@@ -1102,14 +1089,16 @@
       <span id="status-icon" class="status-dot is-idle" aria-hidden="true"></span>
       <span id="status-text" role="status" aria-live="polite">Ready</span>
       <span id="status-detail" class="status-detail mono"></span>
+      <a id="key-chip" class="context-chip key-chip" href="settings.html#api-keys" hidden>API key needed</a>
       <a id="context-chip" class="context-chip" href="settings.html#context" hidden>Workspace context on</a>
       <button id="cancel-btn" class="btn btn-ghost btn-sm" type="button" hidden>Cancel</button>
       <span id="confidence-badge" class="confidence" hidden></span>
       <div class="status-actions">
-        <button id="run-again-btn" class="btn btn-secondary btn-sm" type="button" aria-keyshortcuts="R" disabled>
+        <button id="run-again-btn" class="btn btn-secondary btn-sm" type="button" aria-keyshortcuts="Control+Enter Meta+Enter" aria-describedby="run-again-desc" disabled>
           Run again
-          <kbd class="kbd single-key" aria-hidden="true">R</kbd>
+          <kbd class="kbd" id="run-again-shortcut" aria-hidden="true">Ctrl+Enter</kbd>
         </button>
+        <span id="run-again-desc" class="visually-hidden">Sends the same image again to your AI provider.</span>
         <div class="menu">
           <button id="export-btn" class="btn btn-secondary btn-sm" type="button" disabled aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu-dropdown">
             Export
@@ -1175,7 +1164,7 @@
             <li><span>Drag around the part of the screen you want explained. Press <kbd class="kbd">Esc</kbd> to cancel.</span></li>
             <li><span>The selected image is sent to <strong id="welcome-provider">your AI provider</strong> for analysis. <span id="welcome-shield-on">Before anything is sent, ScreenshotAI checks the image on this computer for API keys, passwords and tokens, and lets you review what it covered.</span><span id="welcome-shield-off" hidden>The secret check is off in <a href="settings.html#privacy">Settings &gt; Privacy</a>, so keep keys and passwords out of the region.</span><span id="welcome-context" hidden> Workspace context is included; change that in <a href="settings.html#context">Settings &gt; Context</a>.</span></span></li>
           </ol>
-          <p class="welcome-note">Shortcuts: <kbd class="kbd">C</kbd> capture, <kbd class="kbd">R</kbd> run again, <kbd class="kbd">E</kbd> export, <kbd class="kbd">1</kbd>–<kbd class="kbd">4</kbd> switch result views.</p>
+          <p class="welcome-note">Shortcuts: <kbd class="kbd">C</kbd> capture, <kbd class="kbd">E</kbd> export, <kbd class="kbd">1</kbd>–<kbd class="kbd">4</kbd> switch result views.</p>
         </section>
 
         <section id="error-panel" class="error-panel" aria-labelledby="error-title" hidden>
@@ -1191,10 +1180,10 @@
 
         <div id="results" class="results" hidden>
           <div class="tabs" role="tablist" aria-label="Result views">
-            <button id="tab-summary" class="tab" type="button" role="tab" aria-selected="true" aria-controls="content-summary" aria-keyshortcuts="1" tabindex="0">Answer <kbd class="kbd tab-key single-key" aria-hidden="true">1</kbd></button>
-            <button id="tab-issues" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-issues" aria-keyshortcuts="2" tabindex="-1">Issues <span id="badge-issues" class="tab-count"></span> <kbd class="kbd tab-key single-key" aria-hidden="true">2</kbd></button>
-            <button id="tab-notes" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-notes" aria-keyshortcuts="3" tabindex="-1">Suggestions <span id="badge-notes" class="tab-count"></span> <kbd class="kbd tab-key single-key" aria-hidden="true">3</kbd></button>
-            <button id="tab-raw" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-raw" aria-keyshortcuts="4" tabindex="-1">JSON <kbd class="kbd tab-key single-key" aria-hidden="true">4</kbd></button>
+            <button id="tab-summary" class="tab" type="button" role="tab" aria-selected="true" aria-controls="content-summary" aria-keyshortcuts="1" tabindex="0">Answer</button>
+            <button id="tab-issues" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-issues" aria-keyshortcuts="2" tabindex="-1">Issues <span id="badge-issues" class="tab-count"></span></button>
+            <button id="tab-notes" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-notes" aria-keyshortcuts="3" tabindex="-1">Suggestions <span id="badge-notes" class="tab-count"></span></button>
+            <button id="tab-raw" class="tab" type="button" role="tab" aria-selected="false" aria-controls="content-raw" aria-keyshortcuts="4" tabindex="-1">JSON</button>
           </div>
           <div id="content-summary" class="tab-panel" role="tabpanel" aria-labelledby="tab-summary" tabindex="0"></div>
           <div id="content-issues" class="tab-panel" role="tabpanel" aria-labelledby="tab-issues" tabindex="0" hidden></div>
