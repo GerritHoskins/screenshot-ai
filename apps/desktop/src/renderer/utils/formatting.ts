@@ -540,7 +540,13 @@ export function describeError(code: string, message: string, context: ErrorConte
 }
 
 /** What the local secret check did to one capture (counts only). */
-export interface ShieldSummary { status: 'off' | 'clean' | 'covered' | 'sent-uncovered' | 'unchecked'; found: number; covered: number }
+export interface ShieldSummary {
+  status: 'off' | 'clean' | 'covered' | 'sent-uncovered' | 'unchecked';
+  found: number;
+  covered: number;
+  /** Covered areas in image pixels (positions only), for outlining in the viewer. */
+  regions?: Array<{ x: number; y: number; w: number; h: number }>;
+}
 
 /** "2 areas covered", "Nothing found", "Off": the secret check's result for this capture. */
 export function describeShield(s: ShieldSummary): string {

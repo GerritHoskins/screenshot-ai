@@ -230,6 +230,7 @@ function updateControls() {
   // Say where Run again sends the image: it's the one action that leaves the machine without a new capture.
   const sendTarget = `Sends the same image again to ${providerLabel(settingsProvider ?? runMeta.provider) || 'your AI provider'}.`;
   runAgainBtn.title = sendTarget;
+  captureBtn.title = `Capture a region and send it to ${providerLabel(settingsProvider) || 'your AI provider'} after a local secret check.`;
   const runAgainDesc = byId('run-again-desc');
   if (runAgainDesc) runAgainDesc.textContent = sendTarget;
   exportBtn.disabled = !showingResult;
@@ -309,7 +310,11 @@ function readShieldSummary(value: unknown): ShieldSummary | undefined {
   const s = value as Partial<ShieldSummary> | null | undefined;
   if (!s || !SHIELD_STATUSES.includes(String(s.status))) return undefined;
   const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0);
-  return { status: s.status as ShieldSummary['status'], found: count(s.found), covered: count(s.covered) };
+  const regions = (Array.isArray(s.regions) ? s.regions : [])
+    .slice(0, 200)
+    .map(r => ({ x: count(r?.x), y: count(r?.y), w: count(r?.w), h: count(r?.h) }))
+    .filter(r => r.w > 0 && r.h > 0);
+  return { status: s.status as ShieldSummary['status'], found: count(s.found), covered: count(s.covered), ...(regions.length ? { regions } : {}) };
 }
 
 function receiveScreenshot(dataUrl: string, shield?: unknown) {
@@ -362,9 +367,9 @@ function renderRunMeta() {
     ['Secret check', meta.shield ? describeShield(meta.shield) : undefined, false],
     ['Model', model, true],
     ['Duration', typeof meta.durationMs === 'number' && meta.durationMs > 0 ? formatSeconds(meta.durationMs) : undefined, true],
-    ['Tokens', hasTokens ? formatTokens(meta.promptTokens!, meta.completionTokens!, 'en-US') : undefined, true],
+    ['Tokens', hasTokens ? formatTokens(meta.promptTokens!, meta.completionTokens!) : undefined, true],
     ['Image', meta.width && meta.height ? `${meta.width} × ${meta.height}` : undefined, true],
-    ['Captured', meta.capturedAt ? new Date(meta.capturedAt).toLocaleTimeString() : undefined, false],
+    ['Captured', meta.capturedAt ? new Date(meta.capturedAt).toLocaleTimeString() : undefined, true],
   ];
   screenshotMetadata.replaceChildren(...rows.filter(([, value]) => value).map(([label, value, mono]) => {
     const row = document.createElement('div');
@@ -375,6 +380,17 @@ function renderRunMeta() {
     if (mono) description.className = 'mono';
     description.textContent = value!;
     if (label === 'Included' && meta.sent) description.replaceChildren(renderSentDetails(meta.sent, value!));
+    if (label === 'Secret check' && meta.shield?.regions?.length && currentScreenshot) {
+      // The claim is checkable: open the capture with each covered area outlined.
+      const show = document.createElement('button');
+      show.type = 'button';
+      show.className = 'meta-link';
+      show.textContent = value!;
+      show.setAttribute('aria-label', `${value}: show in screenshot`);
+      show.title = 'Show covered areas in the screenshot';
+      show.addEventListener('click', openScreenshotViewer);
+      description.replaceChildren(show);
+    }
     row.append(term, description);
     return row;
   }));
@@ -673,6 +689,7 @@ function renderResult(response: ResultPayload, statusOverride?: string) {
     completionTokens: meta?.completionTokens,
   };
   lastResultView = { screenshot: currentScreenshot, meta: { ...runMeta } };
+  saveLastResult();
   renderRunMeta();
 
   filterSeverity = 'all';
@@ -685,10 +702,10 @@ function renderResult(response: ResultPayload, statusOverride?: string) {
   switchTab(landingTab());
   updateConfidence(data.confidence);
   resetFeedback();
-  // Provider, model and duration live in the side pane; the status line summarizes the outcome.
-  const issueCount = data.issues?.length ?? 0;
-  const outcome = issueCount ? `Analysis complete · ${issueCount} issue${issueCount === 1 ? '' : 's'}` : 'Analysis complete';
-  setStatus(statusOverride ? 'idle' : 'success', statusOverride ?? outcome);
+  // The tab badge carries the issue count; the status says where the image went and how long it took.
+  const where = joinDetail(providerLabel(runMeta.provider) ? `Sent to ${providerLabel(runMeta.provider)}` : undefined,
+    typeof runMeta.durationMs === 'number' && runMeta.durationMs > 0 ? formatSeconds(runMeta.durationMs) : undefined);
+  setStatus(statusOverride ? 'idle' : 'success', statusOverride ?? 'Analysis complete', where);
   updateControls();
 }
 
@@ -1217,6 +1234,7 @@ function updateViewerTransform() {
   if (!viewerImage) return;
   // CSSOM property (not markup): pan and zoom are continuous values.
   viewerImage.style.transform = `translate(${viewerPanX}px, ${viewerPanY}px) scale(${viewerZoom})`;
+  placeViewerRegions();
   if (viewerZoomLevel) viewerZoomLevel.textContent = `${Math.round(viewerZoom * 100)}%`;
 }
 
@@ -1232,12 +1250,51 @@ function resetViewer() {
   updateViewerTransform();
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** Outline the areas the secret check covered, in the image's own pixel space. */
+function drawViewerRegions() {
+  const overlay = byId('viewer-regions');
+  const caption = byId('viewer-caption');
+  const regions = runMeta.shield?.regions ?? [];
+  if (!overlay || !viewerImage) return;
+  overlay.replaceChildren();
+  overlay.setAttribute('viewBox', `0 0 ${viewerImage.naturalWidth || 1} ${viewerImage.naturalHeight || 1}`);
+  for (const r of regions) {
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', String(r.x));
+    rect.setAttribute('y', String(r.y));
+    rect.setAttribute('width', String(r.w));
+    rect.setAttribute('height', String(r.h));
+    overlay.append(rect);
+  }
+  overlay.toggleAttribute('hidden', !regions.length);
+  if (caption) {
+    caption.hidden = !regions.length;
+    caption.textContent = regions.length ? `${regions.length} ${regions.length === 1 ? 'area' : 'areas'} covered before sending` : '';
+  }
+  placeViewerRegions();
+}
+
+/** Keep the overlay on the image's layout box with the same pan and zoom. */
+function placeViewerRegions() {
+  const overlay = byId('viewer-regions');
+  if (!overlay || !viewerImage || overlay.hasAttribute('hidden')) return;
+  overlay.style.left = `${viewerImage.offsetLeft}px`;
+  overlay.style.top = `${viewerImage.offsetTop}px`;
+  overlay.style.width = `${viewerImage.offsetWidth}px`;
+  overlay.style.height = `${viewerImage.offsetHeight}px`;
+  overlay.style.transform = viewerImage.style.transform;
+}
+
 function openScreenshotViewer() {
   if (!screenshotViewer || !viewerImage || !currentScreenshot) return;
   viewerReturnFocus = document.activeElement as HTMLElement | null;
   viewerImage.src = currentScreenshot;
   resetViewer();
   screenshotViewer.hidden = false;
+  if (viewerImage.complete) drawViewerRegions();
+  else viewerImage.addEventListener('load', drawViewerRegions, { once: true });
   byId('viewer-close')?.focus();
 }
 
@@ -1256,6 +1313,7 @@ function setupScreenshotViewer() {
   byId('viewer-zoom-out')?.addEventListener('click', () => setZoom(viewerZoom / 1.2));
   byId('viewer-reset')?.addEventListener('click', resetViewer);
   byId('viewer-close')?.addEventListener('click', closeScreenshotViewer);
+  window.addEventListener('resize', placeViewerRegions);
   screenshotViewer.querySelector('.screenshot-viewer-overlay')?.addEventListener('click', closeScreenshotViewer);
 
   viewerContent.addEventListener('wheel', event => {
@@ -1437,6 +1495,37 @@ function setupEventListeners() {
   });
 }
 
+// Settings opens in this same window, so the last result rides along in sessionStorage and comes back on return.
+const LAST_RESULT_KEY = 'screenshot-ai.last-result';
+
+function saveLastResult() {
+  if (!lastResult || !lastResultView) return;
+  const save = (screenshot: string | null) => sessionStorage.setItem(LAST_RESULT_KEY, JSON.stringify({ result: lastResult, view: { ...lastResultView, screenshot } }));
+  try {
+    save(lastResultView.screenshot);
+  } catch {
+    // Over quota with the image: keep the result without its preview rather than lose it.
+    try { save(null); } catch { /* storage unavailable: in-memory only */ }
+  }
+}
+
+function restoreLastResult(): boolean {
+  try {
+    const raw = sessionStorage.getItem(LAST_RESULT_KEY);
+    if (!raw) return false;
+    const stored = JSON.parse(raw) as { result?: ResultPayload; view?: { screenshot?: unknown; meta?: RunMeta } };
+    if (!stored.result?.success || !stored.result.data || !stored.view?.meta) return false;
+    const screenshot = typeof stored.view.screenshot === 'string' && SCREENSHOT_DATA_URL.test(stored.view.screenshot) ? stored.view.screenshot : null;
+    currentScreenshot = screenshot;
+    setPreview(screenshot);
+    runMeta = { ...stored.view.meta };
+    renderResult(stored.result);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function initialize() {
   if (!initializeElements()) {
     console.error('Failed to initialize elements');
@@ -1455,7 +1544,8 @@ function initialize() {
   showView('welcome');
   switchTab('summary');
   updateControls();
-  void loadWelcome();
+  const restored = restoreLastResult();
+  void loadWelcome().then(() => { if (restored) updateControls(); });
 }
 
 if (document.readyState === 'loading') {

@@ -106,7 +106,11 @@ describe('shieldCapture onSummary', () => {
     mocks.review = (payload) => payload.boxes;
     const { result, onSummary } = await capture();
     expect(result).not.toBe(png);
-    expect(onSummary).toHaveBeenCalledExactlyOnceWith({ status: 'covered', found: 1, covered: 1 });
+    expect(onSummary).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'covered', found: 1, covered: 1 }));
+    const [{ regions }] = onSummary.mock.calls[0];
+    // Positions only: the summary never carries the rule or the matched text.
+    expect(regions).toHaveLength(1);
+    expect(Object.keys(regions[0]).sort()).toEqual(['h', 'w', 'x', 'y']);
   });
 
   it('reports sent-uncovered when the user uncovers a finding', async () => {
@@ -120,7 +124,10 @@ describe('shieldCapture onSummary', () => {
     mocks.ocr.mockResolvedValue({ status: 'ok', result: { lines: [] }, ms: 5 });
     mocks.review = () => [{ x: 1, y: 1, w: 20, h: 20, source: 'manual' }, { x: 40, y: 1, w: 20, h: 20, source: 'manual' }];
     const { onSummary } = await capture({ clientName: 'agent' });
-    expect(onSummary).toHaveBeenCalledExactlyOnceWith({ status: 'covered', found: 0, covered: 2 });
+    expect(onSummary).toHaveBeenCalledExactlyOnceWith({
+      status: 'covered', found: 0, covered: 2,
+      regions: [{ x: 1, y: 1, w: 20, h: 20 }, { x: 40, y: 1, w: 20, h: 20 }],
+    });
   });
 
   it('reports nothing when the user cancels', async () => {

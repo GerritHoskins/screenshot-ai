@@ -4,7 +4,6 @@
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'" />
     <title>ScreenshotAI</title>
-    <link rel="stylesheet" href="fonts.css" />
     <style>
       /* ---------- Tokens ---------- */
       :root {
@@ -440,7 +439,19 @@
       .run-meta dt { color: var(--ink-3); }
       .run-meta dd { color: var(--ink); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
       .run-meta dd.mono { font-size: 11.5px; line-height: 18px; }
-      .sent-files summary { cursor: pointer; color: var(--ink); text-decoration: underline dotted var(--ink-3); text-underline-offset: 3px; }
+      /* Same chevron as Technical details, so every disclosure in the window looks alike. */
+      .sent-files summary { display: inline-flex; align-items: center; gap: 7px; list-style: none; cursor: pointer; color: var(--ink); text-decoration: underline dotted var(--ink-3); text-underline-offset: 3px; }
+      .sent-files summary::-webkit-details-marker { display: none; }
+      .sent-files summary::before {
+        content: "";
+        flex: none;
+        width: 5px; height: 5px;
+        border-right: 1.5px solid var(--ink-3);
+        border-bottom: 1.5px solid var(--ink-3);
+        transform: rotate(-45deg);
+        transition: transform 200ms var(--ease-out);
+      }
+      .sent-files[open] summary::before { transform: rotate(45deg); }
       .sent-files summary:hover { color: var(--accent); }
       .sent-files ul { list-style: none; margin: 6px 0 0; padding: 0 0 0 8px; border-left: 2px solid var(--border); max-height: 132px; overflow-y: auto; }
       .sent-files li { font-size: 11.5px; line-height: 18px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -987,7 +998,24 @@
         user-select: none;
         pointer-events: none;
       }
-      .viewer-regions-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      /* Covered areas: a dashed outline drawn over the already-covered image, so the claim can be checked. */
+      .viewer-regions { position: absolute; pointer-events: none; overflow: visible; }
+      .viewer-regions[hidden] { display: none; }
+      .viewer-regions rect { fill: none; stroke: #f5b544; stroke-width: 2; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+      .viewer-heading { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+      .viewer-caption { color: #c9cacf; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .meta-link {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--ink);
+        font: inherit;
+        text-align: left;
+        text-decoration: underline dotted var(--ink-3);
+        text-underline-offset: 3px;
+        cursor: pointer;
+      }
+      .meta-link:hover { color: var(--accent); }
 
       /* ---------- Narrow windows ---------- */
       @media (max-width: 600px) {
@@ -1112,10 +1140,10 @@
           </div>
         </div>
         <div id="feedback-buttons" class="feedback" hidden>
-          <button id="feedback-positive" class="btn btn-ghost btn-icon" type="button" aria-label="Helpful" aria-pressed="false">
+          <button id="feedback-positive" class="btn btn-ghost btn-icon" type="button" aria-label="Helpful" title="Helpful" aria-pressed="false">
             <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>
           </button>
-          <button id="feedback-negative" class="btn btn-ghost btn-icon" type="button" aria-label="Not helpful" aria-pressed="false">
+          <button id="feedback-negative" class="btn btn-ghost btn-icon" type="button" aria-label="Not helpful" title="Not helpful: tell us what was wrong" aria-pressed="false">
             <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>
           </button>
           <div id="feedback-popover" class="popover" role="dialog" aria-labelledby="feedback-title" aria-describedby="feedback-note" hidden>
@@ -1199,7 +1227,10 @@
       <div class="screenshot-viewer-overlay"></div>
       <div class="screenshot-viewer-container">
         <div class="screenshot-viewer-header">
-          <h2 id="viewer-title">Screenshot</h2>
+          <div class="viewer-heading">
+            <h2 id="viewer-title">Screenshot</h2>
+            <span id="viewer-caption" class="viewer-caption" hidden></span>
+          </div>
           <div class="viewer-controls">
             <button id="viewer-zoom-out" class="viewer-btn" type="button" aria-label="Zoom out" title="Zoom out (-)">
               <svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg>
@@ -1218,7 +1249,7 @@
         </div>
         <div id="viewer-content" class="screenshot-viewer-content">
           <img id="viewer-image" alt="Captured screenshot" draggable="false">
-          <canvas id="viewer-regions" class="viewer-regions-canvas"></canvas>
+          <svg id="viewer-regions" class="viewer-regions" aria-hidden="true" preserveAspectRatio="none" hidden></svg>
         </div>
       </div>
     </div>

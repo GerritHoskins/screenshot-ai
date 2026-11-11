@@ -42,6 +42,8 @@ export interface ShieldSummary {
   found: number;
   /** Areas covered in the image that was sent, detected or drawn by the user. */
   covered: number;
+  /** Where the covered areas are, in image pixels, so the main window can outline them. Positions only. */
+  regions?: Array<{ x: number; y: number; w: number; h: number }>;
 }
 
 export type ShieldNotice = 'none' | 'scan-failed' | 'scan-unavailable' | 'shield-off';
@@ -148,6 +150,7 @@ export async function shieldCapture(png: Buffer, request: ShieldRequest): Promis
       : finalBoxes.length > 0 ? 'covered' : 'clean',
     found: boxes.length,
     covered: finalBoxes.length,
+    ...(finalBoxes.length ? { regions: finalBoxes.map(({ x, y, w, h }) => ({ x, y, w, h })) } : {}),
   });
   logger.info('shield', 'Capture review sent', {
     agent: !!request.agent,

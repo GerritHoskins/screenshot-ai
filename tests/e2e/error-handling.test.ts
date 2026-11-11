@@ -41,6 +41,28 @@ describe('Built desktop error handling', () => {
     expect(await app.page.locator('.sent-files li').allTextContents()).toEqual(['src/a.ts', 'README.md']);
   });
 
+  it('outlines the areas the secret check covered and keeps the result across a trip to Settings', async () => {
+    // A 1x1 PNG stands in for the capture; the region is in its pixel space.
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    await sendToRenderer(app, 'analysis:screenshot', { dataUrl, shield: { status: 'covered', found: 1, covered: 1, regions: [{ x: 0, y: 0, w: 1, h: 1 }] } });
+    await sendToRenderer(app, 'analysis:result', analysisResult('Shielded result'));
+    await app.page.waitForFunction(() => document.querySelector('#status-detail')?.textContent?.startsWith('Sent to OpenAI'));
+    await app.page.getByRole('button', { name: '1 area covered: show in screenshot' }).click();
+    await app.page.locator('#screenshot-viewer').waitFor();
+    expect(await app.page.locator('#viewer-regions rect').count()).toBe(1);
+    expect(await app.page.locator('#viewer-caption').textContent()).toBe('1 area covered before sending');
+    await app.page.keyboard.press('Escape');
+
+    // Settings opens in this window; coming back restores the result instead of the welcome screen.
+    await app.page.locator('#settings-link').click();
+    await app.page.waitForURL(/settings\.html/);
+    await app.page.goto(app.page.url().replace(/settings\.html.*$/, 'index.html'));
+    await app.page.waitForFunction(() => document.querySelector('#content-summary')?.textContent?.includes('Shielded result'));
+    expect(await app.page.locator('#welcome').isHidden()).toBe(true);
+    expect(await app.page.locator('#run-again-btn').isDisabled()).toBe(false);
+    expect(await app.page.getByRole('button', { name: '1 area covered: show in screenshot' }).isVisible()).toBe(true);
+  });
+
   it('describes a blocked request as not sent and keeps the last result reachable', async () => {
     await sendToRenderer(app, 'analysis:processing', { stage: 'analyzing', provider: 'openai', model: 'gpt-x' });
     await sendToRenderer(app, 'analysis:error', {
@@ -55,7 +77,7 @@ describe('Built desktop error handling', () => {
     expect(meta).toContain('Not sent to');
     expect(meta).not.toContain('Duration');
     await app.page.getByRole('button', { name: 'Back to last result' }).click();
-    await app.page.waitForFunction(() => document.querySelector('#content-summary')?.textContent?.includes('Recovered result'));
+    await app.page.waitForFunction(() => document.querySelector('#content-summary')?.textContent?.includes('Shielded result'));
     expect(await app.page.locator('#error-panel').isHidden()).toBe(true);
   });
 });
