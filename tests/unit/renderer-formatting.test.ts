@@ -96,7 +96,7 @@ describe('error copy', () => {
     expect(missing.actions).toEqual([{ kind: 'link', label: 'Add API key', href: 'settings.html#api-keys' }]);
     const rejected = describeError('AUTH_ERROR', '401 invalid x-api-key', { provider: 'anthropic' })!;
     expect(rejected.title).toBe('Your API key was rejected');
-    expect(rejected.actions.map(action => action.label)).toEqual(['Open API keys', 'Try again']);
+    expect(rejected.actions.map(action => action.label)).toEqual(['Open API keys', 'Run again']);
   });
 
   it('says a privacy block was not sent and points to Context settings', () => {

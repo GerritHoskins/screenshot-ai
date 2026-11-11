@@ -371,7 +371,7 @@ export function buildReportMarkdown(response: ReportInput): string {
 
   const notes = (data.uxCritique ?? []).map(normalizeNote);
   if (notes.length) {
-    parts.push(`## Notes (${notes.length})`);
+    parts.push(`## Suggestions (${notes.length})`);
     notes.forEach(note => {
       const lines = note.area ? [`### ${note.area}`, note.issue] : [`- ${note.issue}`];
       if (note.suggestion) lines.push(`**Suggestion:** ${note.suggestion}`);
@@ -412,6 +412,8 @@ export type ErrorAction =
 export interface ErrorCopy {
   title: string;
   body: string;
+  /** Two or three words for the status bar; the panel title carries the explanation. */
+  status: string;
   actions: ErrorAction[];
   retryAfterSeconds?: number;
 }
@@ -422,7 +424,8 @@ export interface ErrorContext {
   retryAfterSeconds?: number;
 }
 
-const TRY_AGAIN: ErrorAction = { kind: 'retry', label: 'Try again' };
+// Same words as the status-bar button: retrying an error and re-running a result send the same image again.
+const TRY_AGAIN: ErrorAction = { kind: 'retry', label: 'Run again' };
 const CAPTURE_AGAIN: ErrorAction = { kind: 'capture', label: 'Capture again' };
 
 /** Provider retry delay from the payload, its metadata, or a "retry after N seconds" message. */
@@ -450,7 +453,8 @@ export function describeError(code: string, message: string, context: ErrorConte
   if (code === 'CAPTURE_ERROR' || /screen (recording|capture)|no screen sources|capture failed/i.test(raw)) {
     return {
       title: 'Screen capture failed',
-      body: raw || 'The screen could not be captured. Check screen recording permissions, then try again.',
+      status: 'Capture failed',
+      body: raw || 'The screen could not be captured. Check screen recording permissions, then capture again.',
       actions: [CAPTURE_AGAIN],
     };
   }
@@ -460,6 +464,7 @@ export function describeError(code: string, message: string, context: ErrorConte
       const missing = /no api key|missing|not set|not configured/i.test(raw);
       return {
         title: missing ? 'No API key set' : 'Your API key was rejected',
+        status: missing ? 'API key needed' : 'Key rejected',
         body: missing
           ? `Add an API key for ${provider} in Settings to analyze screenshots.`
           : `${Provider} did not accept the stored API key. Check that it is correct and still active.`,
@@ -472,9 +477,10 @@ export function describeError(code: string, message: string, context: ErrorConte
     case 'RATE_LIMIT':
       return {
         title: `Rate limited by ${name || 'the AI provider'}`,
+        status: 'Rate limited',
         body: context.retryAfterSeconds
           ? `${Provider} asked for a pause of ${context.retryAfterSeconds} seconds before the next request.`
-          : `${Provider} is receiving too many requests for this key. Wait a moment, then try again.`,
+          : `${Provider} is receiving too many requests for this key. Wait a moment, then run it again.`,
         actions: [TRY_AGAIN],
         retryAfterSeconds: context.retryAfterSeconds,
       };
@@ -482,14 +488,16 @@ export function describeError(code: string, message: string, context: ErrorConte
     case 'TIMEOUT':
       return {
         title: `Couldn't reach ${provider}`,
+        status: code === 'TIMEOUT' ? 'Timed out' : 'No connection',
         body: code === 'TIMEOUT'
-          ? 'The request timed out. Check your connection, then try again.'
-          : 'Check your internet connection or proxy settings, then try again.',
+          ? 'The request timed out. Check your connection, then run it again.'
+          : 'Check your internet connection or proxy settings, then run it again.',
         actions: [TRY_AGAIN],
       };
     case 'CONTENT_FILTERED':
       return {
         title: `${Provider} declined this image`,
+        status: 'Declined',
         body: "The provider's safety filter blocked this request. Capture a different region to continue.",
         actions: [CAPTURE_AGAIN],
       };
@@ -498,6 +506,7 @@ export function describeError(code: string, message: string, context: ErrorConte
     case 'VALIDATION_ERROR':
       return {
         title: "The response couldn't be read",
+        status: 'Unreadable response',
         body: `${Provider} returned a response in an unexpected format. Running it again usually helps.`,
         actions: [TRY_AGAIN],
       };
@@ -505,6 +514,7 @@ export function describeError(code: string, message: string, context: ErrorConte
       const unverified = /could not be verified/i.test(raw);
       return {
         title: unverified ? "Not sent: context couldn't be checked" : 'Not sent: possible secret in your context',
+        status: 'Not sent',
         body: unverified
           ? `Workspace context couldn't be scanned for secrets, so nothing was sent to ${provider}. Check the context sources, or turn workspace context off.`
           : `Something that looks like a secret was found in your workspace context or custom prompt. Nothing was sent to ${provider}. Remove it, exclude the file, or turn workspace context off.`,
@@ -515,13 +525,15 @@ export function describeError(code: string, message: string, context: ErrorConte
     case 'MODEL_ERROR':
       return {
         title: model ? `Model ${model} rejected the request` : 'The model rejected the request',
+        status: 'Model error',
         body: `Check that the model is available to your ${provider} account, or choose a different one.`,
         actions: [{ kind: 'link', label: 'Change model', href: 'settings.html#providers' }, TRY_AGAIN],
       };
     default:
       return {
         title: 'Something went wrong',
-        body: 'The analysis did not finish. Try again; if it keeps happening, Settings > Diagnostics opens the logs.',
+        status: 'Failed',
+        body: 'The analysis did not finish. Run it again; if it keeps happening, Settings > Diagnostics opens the logs.',
         actions: [TRY_AGAIN],
       };
   }

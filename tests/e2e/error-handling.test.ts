@@ -32,4 +32,30 @@ describe('Built desktop error handling', () => {
     expect(await app.page.locator('#content-summary').textContent()).toContain('Recovered result');
     expect(await app.page.locator('#error-panel').isHidden()).toBe(true);
   });
+
+  it('lists the context files that were sent with the image', async () => {
+    await sendToRenderer(app, 'analysis:result', { ...analysisResult('Recovered result'), sent: { contextFiles: 2, files: ['src/a.ts', 'README.md'], customPrompt: false } });
+    await app.page.locator('.sent-files summary').waitFor();
+    expect(await app.page.locator('.sent-files summary').textContent()).toBe('Image + 2 context files');
+    await app.page.locator('.sent-files summary').click();
+    expect(await app.page.locator('.sent-files li').allTextContents()).toEqual(['src/a.ts', 'README.md']);
+  });
+
+  it('describes a blocked request as not sent and keeps the last result reachable', async () => {
+    await sendToRenderer(app, 'analysis:processing', { stage: 'analyzing', provider: 'openai', model: 'gpt-x' });
+    await sendToRenderer(app, 'analysis:error', {
+      code: 'PRIVACY_BLOCKED', message: 'Potential sensitive data detected.', retryable: false,
+      metadata: { provider: 'openai', model: 'gpt-x' }, sent: null,
+    });
+    await app.page.locator('#error-panel').waitFor();
+    expect(await app.page.locator('#error-title').textContent()).toBe('Not sent: possible secret in your context');
+    expect(await app.page.locator('#status-text').textContent()).toBe('Not sent');
+    expect(await app.page.locator('#error-body').textContent()).toContain('Nothing was sent to OpenAI');
+    const meta = (await app.page.locator('#screenshot-metadata').textContent()) ?? '';
+    expect(meta).toContain('Not sent to');
+    expect(meta).not.toContain('Duration');
+    await app.page.getByRole('button', { name: 'Back to last result' }).click();
+    await app.page.waitForFunction(() => document.querySelector('#content-summary')?.textContent?.includes('Recovered result'));
+    expect(await app.page.locator('#error-panel').isHidden()).toBe(true);
+  });
 });

@@ -33,7 +33,7 @@ export interface AnalysisErrorPayload {
   retryable: boolean;
   metadata?: unknown;
   /** What was sent besides the image; null when nothing was sent. */
-  sent?: { contextFiles: number; customPrompt: boolean } | null;
+  sent?: { contextFiles: number; files?: string[]; customPrompt: boolean } | null;
 }
 
 /** Agent access (MCP server mode) status, mirrored from apps/desktop/src/main/mcp.ts. */

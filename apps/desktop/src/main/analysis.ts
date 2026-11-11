@@ -51,6 +51,8 @@ const DEFAULT_CONFIG: Required<Omit<AnalysisConfig, 'provider' | 'workspaceConte
 /** What the last request actually sent besides the image. Null means nothing left the machine. */
 export interface SentSummary {
   contextFiles: number;
+  /** Workspace-relative paths of the context files included in the prompt. */
+  files: string[];
   customPrompt: boolean;
 }
 
@@ -86,7 +88,8 @@ export class AnalysisService {
     image: Buffer,
     previousFeedback?: 'positive' | 'negative' | null,
     workspaceRoot?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onSending?: (sent: SentSummary) => void
   ): Promise<AIResponse<ScreenshotAnalysis>> {
     this.lastSent = null;
     if (signal?.aborted) return this.cancelledResponse();
@@ -113,7 +116,7 @@ export class AnalysisService {
 
     // Persisted settings are enforced by the shared loader used by preview.
     let workspaceContextText = '';
-    let contextFiles = 0;
+    let contextFiles: string[] = [];
     if (this.config.workspaceContextEnabled !== false) {
       try {
         const context = await loadUnifiedContext({ workspaceRoot: workspaceRoot ?? this.config.workspaceRoot });
@@ -122,7 +125,7 @@ export class AnalysisService {
           return this.privacyError();
         }
         workspaceContextText = formatUnifiedContextAsText(context);
-        contextFiles = context.files.length;
+        contextFiles = context.files.map(f => f.path);
       } catch {
         return this.privacyError('Context could not be verified. Review context settings or disable repository context and try again.');
       }
@@ -208,7 +211,10 @@ export class AnalysisService {
 
     // Execute analysis
     if (signal?.aborted) return this.cancelledResponse();
-    this.lastSent = { contextFiles: workspaceContextText ? contextFiles : 0, customPrompt: usingCustomPrompt };
+    const files = workspaceContextText ? contextFiles : [];
+    this.lastSent = { contextFiles: files.length, files, customPrompt: usingCustomPrompt };
+    // Tell the window what is leaving the machine before the request goes out, not after.
+    onSending?.({ ...this.lastSent, files: [...files] });
     try {
       const response = await provider.complete<ScreenshotAnalysis>(prompt, image, signal ? { signal } : undefined);
 
@@ -217,11 +223,8 @@ export class AnalysisService {
         // For custom prompts, skip strict validation and pass through the data
         // Custom prompts define their own schema
         if (usingCustomPrompt) {
-          // Ensure confidence exists for display purposes, default to 0.5 if not present
-          const customData = {
-            ...response.data,
-            confidence: (response.data as any).confidence ?? 0.5,
-          };
+          // Pass confidence through only if the model reported one; the window hides the badge otherwise.
+          const customData = { ...response.data };
           return createSuccessResponse(customData as ScreenshotAnalysis, response.metadata);
         }
 

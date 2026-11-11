@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   capture: vi.fn(),
   analyze: vi.fn(),
   settings: vi.fn(),
+  apiKey: vi.fn(async () => 'test-key' as string | null),
 }));
 
 vi.mock('electron', () => ({
@@ -29,6 +30,8 @@ vi.mock('electron', () => ({
       setWindowOpenHandler: vi.fn(),
       on: vi.fn(),
     };
+    show = vi.fn();
+    focus = vi.fn();
     constructor() { mocks.windows.push(this); }
     async loadFile(file: string) { this.webContents.mainFrame.url = pathToFileURL(file).href; }
   },
@@ -47,6 +50,7 @@ vi.mock('fs', () => ({ existsSync: () => false }));
 vi.mock('../../apps/desktop/src/main/capture', () => ({ captureScreenSelection: mocks.capture }));
 vi.mock('../../apps/desktop/src/main/shield', () => ({ shieldCapture: async (png: Buffer) => png }));
 vi.mock('../../apps/desktop/src/main/analysis', () => ({ getAnalysisService: () => ({ analyzeScreenshot: mocks.analyze, providerType: 'anthropic', model: 'claude-test-model' }) }));
+vi.mock('../../src/security/keychain', () => ({ getApiKey: mocks.apiKey }));
 vi.mock('../../apps/desktop/src/main/settings', () => ({ registerSettingsHandlers: mocks.settings }));
 vi.mock('../../src/logging', () => ({ getLogger: () => ({ debug: vi.fn(), info: mocks.logInfo, warn: vi.fn(), error: vi.fn(), logAIResponse: vi.fn(), logAIRequest: vi.fn() }) }));
 vi.mock('../../src/errors', () => ({ mapCaptureError: () => ({ error: { code: 'CAPTURE_ERROR', retryable: true } }), mapProviderError: vi.fn() }));
@@ -95,6 +99,17 @@ describe('actual main-process capture serialization', () => {
     await clickCapture();
     expect(mocks.capture).toHaveBeenCalledTimes(2);
     expect(mocks.analyze).not.toHaveBeenCalled();
+  });
+
+  it('the global hotkey reports a missing API key instead of opening the overlay', async () => {
+    mocks.apiKey.mockResolvedValueOnce(null);
+    mocks.shortcuts.get('CommandOrControl+Shift+S')!();
+    await vi.waitFor(() => expect(mocks.windows[0].webContents.send).toHaveBeenCalledWith('analysis:error', expect.objectContaining({ code: 'AUTH_ERROR', sent: null })));
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect((mocks.windows[0] as unknown as { show: ReturnType<typeof vi.fn> }).show).toHaveBeenCalled();
+    mocks.capture.mockResolvedValueOnce(null);
+    await clickCapture();
+    await vi.waitFor(() => expect(mocks.capture).toHaveBeenCalledTimes(1));
   });
 
   it('releases the capture lock when screen selection fails', async () => {
