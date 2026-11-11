@@ -102,6 +102,8 @@ describe('context privacy in the production analysis path', () => {
     const result = await analyze();
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_REQUEST');
+    // Tagged so the window says "not sent" instead of blaming the model.
+    expect(result.error).toMatchObject({ details: { reason: 'privacy' }, retryable: false });
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(createProvider).not.toHaveBeenCalled();
   });

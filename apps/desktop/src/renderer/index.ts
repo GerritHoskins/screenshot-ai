@@ -1,1593 +1,1104 @@
 import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
-import { escapeHtml, formatAnswer, normalizeSeverity } from "./utils/formatting";
+import {
+  buildReportMarkdown,
+  confidenceLevel,
+  describeError,
+  escapeHtml,
+  extractAnswer,
+  formatAnswer,
+  formatAnswerParts,
+  formatIssueText,
+  formatSeconds,
+  formatTokens,
+  icon,
+  normalizeConfidence,
+  normalizeIssue,
+  normalizeNote,
+  providerLabel,
+  renderCodeBlock,
+  resolveRetryAfter,
+  summaryToText,
+  type ErrorAction,
+  type NormalizedIssue,
+} from "./utils/formatting";
 
-// Element references
-let statusIcon: HTMLDivElement;
-let statusText: HTMLSpanElement;
-let confidenceBadge: HTMLDivElement;
+// ============================================================================
+// API shape
+// ============================================================================
+
+type Provider = 'openai' | 'anthropic';
+type FeedbackReason = 'too-verbose' | 'incorrect' | 'missing-context' | 'wrong-format' | 'other';
+interface FeedbackDetails { reason?: FeedbackReason; comment?: string }
+interface ProcessingPayload { stage: string; provider?: Provider; model?: string; screenshotDataUrl?: string }
+/** What a request sent besides the image; null means nothing left the machine. */
+interface SentSummary { contextFiles: number; customPrompt: boolean }
+interface ErrorPayload { code: string; message: string; retryable?: boolean; retryAfterSeconds?: number; metadata?: unknown; sent?: SentSummary | null }
+type ResultPayload = AIResponse<ScreenshotAnalysis> & { sent?: SentSummary | null };
+interface SaveResult { success: boolean; cancelled?: boolean; filePath?: string; error?: string }
+
+/**
+ * The renderer's view of window.api. W1 adds analysis.cancel(), provider/model
+ * on the processing payload and feedback.submit(positive, details); until
+ * global.d.ts carries them, this local shape is cast onto window.api.
+ */
+interface RendererApi {
+  capture: { start(): void };
+  files: {
+    saveTextFile(params: { content: string; defaultFileName?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<SaveResult>;
+  };
+  analysis: {
+    onProcessing(callback: (payload: ProcessingPayload) => void): void;
+    onScreenshot(callback: (payload: { dataUrl: string }) => void): void;
+    onResult(callback: (response: ResultPayload) => void): void;
+    onError(callback: (payload: ErrorPayload) => void): void;
+    retry(): void;
+    cancel?(): void;
+    submitFeedback?(positive: boolean): Promise<unknown>;
+  };
+  feedback?: { submit(positive: boolean, details?: FeedbackDetails): Promise<unknown> };
+  settings: {
+    get(key?: string): Promise<unknown>;
+    getApiKeyStatus(provider: Provider): Promise<{ hasKey: boolean }>;
+  };
+}
+
+let api: RendererApi;
+
+// ============================================================================
+// Elements
+// ============================================================================
+
+const byId = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
+const TABS = ['summary', 'issues', 'notes', 'raw'] as const;
+type TabName = typeof TABS[number];
+
 let captureBtn: HTMLButtonElement;
+let statusIcon: HTMLElement;
+let statusText: HTMLElement;
 let runAgainBtn: HTMLButtonElement;
 let exportBtn: HTMLButtonElement;
-let feedbackButtons: HTMLDivElement;
-let feedbackPositiveBtn: HTMLButtonElement;
-let feedbackNegativeBtn: HTMLButtonElement;
-let screenshotPreview: HTMLDivElement;
-let screenshotMetadata: HTMLDivElement;
-let tabButtons: NodeListOf<HTMLButtonElement>;
-let tabContents: NodeListOf<HTMLDivElement>;
-let toastEl: HTMLDivElement;
-let screenshotViewer: HTMLDivElement;
-let viewerImage: HTMLImageElement;
-let viewerContent: HTMLDivElement;
-let viewerZoomLevel: HTMLSpanElement;
-let viewerZoomInBtn: HTMLButtonElement;
-let viewerZoomOutBtn: HTMLButtonElement;
-let viewerResetBtn: HTMLButtonElement;
-let viewerCloseBtn: HTMLButtonElement;
-let viewerRegionsCanvas: HTMLCanvasElement;
-let api: any;
+let statusDetail: HTMLElement | null;
+let cancelBtn: HTMLButtonElement | null;
+let confidenceBadge: HTMLElement | null;
+let exportMenu: HTMLElement | null;
+let feedbackButtons: HTMLElement | null;
+let feedbackPositiveBtn: HTMLButtonElement | null;
+let feedbackNegativeBtn: HTMLButtonElement | null;
+let feedbackPopover: HTMLElement | null;
+let feedbackSubmitBtn: HTMLButtonElement | null;
+let feedbackOther: HTMLTextAreaElement | null;
+let screenshotPreview: HTMLButtonElement | null;
+let screenshotMetadata: HTMLElement | null;
+let welcome: HTMLElement | null;
+let errorPanel: HTMLElement | null;
+let results: HTMLElement | null;
+let toastEl: HTMLElement | null;
+let screenshotViewer: HTMLElement | null;
+let viewerImage: HTMLImageElement | null;
+let viewerContent: HTMLElement | null;
+let viewerZoomLevel: HTMLElement | null;
+let previewEmptyNodes: Node[] = [];
 
-// State
-let lastResult: AIResponse<ScreenshotAnalysis> | null = null;
-let feedbackSubmitted: 'positive' | 'negative' | null = null;
-let activeTab: string = 'issues';
-const sectionCopyData: Map<string, string> = new Map();
-let allIssues: any[] = [];
-let filteredIssues: any[] = [];
-let filterSeverity: 'all' | 'high' | 'medium' | 'low' = 'all';
-let sortMode: 'severity' | 'slide' | 'type' = 'severity';
-let allExpanded: boolean = false;
+function initializeElements(): boolean {
+  captureBtn = byId<HTMLButtonElement>('capture-btn')!;
+  statusIcon = byId('status-icon')!;
+  statusText = byId('status-text')!;
+  runAgainBtn = byId<HTMLButtonElement>('run-again-btn')!;
+  exportBtn = byId<HTMLButtonElement>('export-btn')!;
+  statusDetail = byId('status-detail');
+  cancelBtn = byId<HTMLButtonElement>('cancel-btn');
+  confidenceBadge = byId('confidence-badge');
+  exportMenu = byId('export-menu-dropdown');
+  feedbackButtons = byId('feedback-buttons');
+  feedbackPositiveBtn = byId<HTMLButtonElement>('feedback-positive');
+  feedbackNegativeBtn = byId<HTMLButtonElement>('feedback-negative');
+  feedbackPopover = byId('feedback-popover');
+  feedbackSubmitBtn = byId<HTMLButtonElement>('feedback-submit');
+  feedbackOther = byId<HTMLTextAreaElement>('feedback-other');
+  screenshotPreview = byId<HTMLButtonElement>('screenshot-preview');
+  screenshotMetadata = byId('screenshot-metadata');
+  welcome = byId('welcome');
+  errorPanel = byId('error-panel');
+  results = byId('results');
+  toastEl = byId('toast');
+  screenshotViewer = byId('screenshot-viewer');
+  viewerImage = byId<HTMLImageElement>('viewer-image');
+  viewerContent = byId('viewer-content');
+  viewerZoomLevel = byId('viewer-zoom-level');
+  previewEmptyNodes = screenshotPreview ? Array.from(screenshotPreview.childNodes, node => node.cloneNode(true)) : [];
 
-// Initialize elements
-function initializeElements() {
-  statusIcon = document.getElementById("status-icon") as HTMLDivElement;
-  statusText = document.getElementById("status-text") as HTMLSpanElement;
-  confidenceBadge = document.getElementById("confidence-badge") as HTMLDivElement;
-  captureBtn = document.getElementById("capture-btn") as HTMLButtonElement;
-  runAgainBtn = document.getElementById("run-again-btn") as HTMLButtonElement;
-  exportBtn = document.getElementById("export-btn") as HTMLButtonElement;
-  feedbackButtons = document.getElementById("feedback-buttons") as HTMLDivElement;
-  feedbackPositiveBtn = document.getElementById("feedback-positive") as HTMLButtonElement;
-  feedbackNegativeBtn = document.getElementById("feedback-negative") as HTMLButtonElement;
-  screenshotPreview = document.getElementById("screenshot-preview") as HTMLDivElement;
-  screenshotMetadata = document.getElementById("screenshot-metadata") as HTMLDivElement;
-  tabButtons = document.querySelectorAll('.findings-tab') as NodeListOf<HTMLButtonElement>;
-  tabContents = document.querySelectorAll('.tab-content') as NodeListOf<HTMLDivElement>;
-  toastEl = document.getElementById("toast") as HTMLDivElement;
-  screenshotViewer = document.getElementById("screenshot-viewer") as HTMLDivElement;
-  viewerImage = document.getElementById("viewer-image") as HTMLImageElement;
-  viewerContent = document.getElementById("viewer-content") as HTMLDivElement;
-  viewerZoomLevel = document.getElementById("viewer-zoom-level") as HTMLSpanElement;
-  viewerZoomInBtn = document.getElementById("viewer-zoom-in") as HTMLButtonElement;
-  viewerZoomOutBtn = document.getElementById("viewer-zoom-out") as HTMLButtonElement;
-  viewerResetBtn = document.getElementById("viewer-reset") as HTMLButtonElement;
-  viewerCloseBtn = document.getElementById("viewer-close") as HTMLButtonElement;
-  viewerRegionsCanvas = document.getElementById("viewer-regions") as HTMLCanvasElement;
-
-  // Use typed API from preload bridge
+  if (!captureBtn || !statusIcon || !statusText || !runAgainBtn || !exportBtn) {
+    console.error('Main window markup is missing required elements');
+    return false;
+  }
   if (!window.api) {
     console.error('API not available - preload script may not have loaded');
-    updateStatus('error', 'Capture unavailable (preload not loaded)');
+    setStatus('error', 'Capture unavailable (preload not loaded)');
     return false;
   }
-  api = window.api;
-  
-  if (!captureBtn) {
-    console.error('Capture button not found');
-    return false;
-  }
-  
+  api = window.api as unknown as RendererApi;
   return true;
 }
 
-// Update status bar
-function updateStatus(state: 'idle' | 'capturing' | 'analyzing' | 'success' | 'error', message?: string) {
-  
-  // Update icon
-  statusIcon.className = `status-icon ${state}`;
-  
-  // Update text
-  switch (state) {
-    case 'idle':
-      statusText.textContent = 'Ready';
-      break;
-    case 'capturing':
-      statusText.textContent = 'Capturing screenshot...';
-      break;
-    case 'analyzing':
-      statusText.textContent = 'Analyzing screenshot...';
-      break;
-    case 'success':
-      statusText.textContent = message || 'Analysis complete';
-      break;
-    case 'error':
-      statusText.textContent = message || 'Error occurred';
-      break;
+// ============================================================================
+// State
+// ============================================================================
+
+type Phase = 'idle' | 'capturing' | 'analyzing' | 'success' | 'error';
+interface RunMeta {
+  /** sending while the request runs; not-sent when it stopped before leaving the machine. */
+  sendState?: 'sending' | 'sent' | 'not-sent';
+  sent?: SentSummary | null;
+  provider?: string;
+  model?: string;
+  durationMs?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  width?: number;
+  height?: number;
+  capturedAt?: number;
+}
+
+let phase: Phase = 'idle';
+let lastResult: ResultPayload | null = null;
+let lastResultView: { screenshot: string | null; meta: RunMeta } | null = null;
+let currentScreenshot: string | null = null;
+let runMeta: RunMeta = {};
+let settingsProvider: Provider | undefined;
+let settingsModel: string | undefined;
+let elapsedTimer: number | undefined;
+let retryTimer: number | undefined;
+/** Epoch ms before which a retry would be refused (rate limit). Both retry controls honor it. */
+let retryReadyAt = 0;
+/** True when the selected provider has no stored key; Capture then explains instead of capturing. */
+let keyMissing = false;
+let toastTimer: number | undefined;
+let feedbackSubmitted: 'positive' | 'negative' | null = null;
+let issues: NormalizedIssue[] = [];
+let visibleIssues: NormalizedIssue[] = [];
+let filterSeverity: 'all' | 'high' | 'medium' | 'low' = 'all';
+let sortMode: 'severity' | 'type' = 'severity';
+let allExpanded = false;
+let popoverReturnFocus: HTMLElement | null = null;
+let viewerReturnFocus: HTMLElement | null = null;
+
+const SCREENSHOT_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+const isMac = /Mac/i.test(navigator.platform || navigator.userAgent);
+
+// ============================================================================
+// Status bar
+// ============================================================================
+
+function setStatus(state: 'idle' | 'working' | 'success' | 'error', text: string, detail = '') {
+  statusIcon.className = `status-dot is-${state}`;
+  statusText.textContent = text;
+  if (statusDetail) statusDetail.textContent = detail;
+}
+
+const joinDetail = (...parts: Array<string | undefined>) => parts.filter(Boolean).join(' · ');
+
+function startElapsed(model?: string) {
+  stopElapsed();
+  const started = performance.now();
+  // The status text already names the provider; the detail adds the model and a live timer.
+  const tick = () => { if (statusDetail) statusDetail.textContent = joinDetail(model, formatSeconds(performance.now() - started)); };
+  tick();
+  elapsedTimer = window.setInterval(tick, 100);
+}
+
+function stopElapsed() {
+  if (elapsedTimer !== undefined) window.clearInterval(elapsedTimer);
+  elapsedTimer = undefined;
+}
+
+const retryBlocked = () => Date.now() < retryReadyAt;
+
+function updateControls() {
+  const busy = phase === 'capturing' || phase === 'analyzing';
+  const showingResult = phase === 'success' && !!lastResult;
+  // One capture at a time: a second capture would race the request in flight.
+  captureBtn.disabled = busy;
+  captureBtn.classList.toggle('btn-primary', !keyMissing);
+  captureBtn.classList.toggle('btn-secondary', keyMissing);
+  // In the error view the panel owns the retry action, so the status-bar duplicate steps aside.
+  if (phase === 'error' && document.activeElement === runAgainBtn) byId('error-title')?.focus();
+  runAgainBtn.hidden = phase === 'error';
+  runAgainBtn.disabled = busy || retryBlocked() || !(currentScreenshot || lastResult);
+  exportBtn.disabled = !showingResult;
+  if (!showingResult) {
+    closeExportMenu(false);
+    closeFeedbackPopover(false);
   }
-  
-  // Update button states
-  runAgainBtn.disabled = state !== 'success';
-  exportBtn.disabled = state !== 'success';
-  
-  // Show/hide feedback buttons
-  if (state === 'success') {
-    feedbackButtons.classList.remove('hidden');
-    feedbackPositiveBtn.disabled = false;
-    feedbackNegativeBtn.disabled = false;
-  } else {
-    feedbackButtons.classList.add('hidden');
-    feedbackPositiveBtn.disabled = true;
-    feedbackNegativeBtn.disabled = true;
+  if (feedbackButtons) feedbackButtons.hidden = !showingResult;
+  if (cancelBtn) {
+    const hide = phase !== 'analyzing';
+    if (hide && document.activeElement === cancelBtn) (runAgainBtn.disabled ? captureBtn : runAgainBtn).focus();
+    cancelBtn.hidden = hide;
   }
 }
 
-// Update confidence badge
-function updateConfidence(confidence: number) {
-  if (confidence === undefined || confidence === null) {
-    confidenceBadge.classList.add('hidden');
+function updateConfidence(value: unknown) {
+  if (!confidenceBadge) return;
+  const confidence = normalizeConfidence(value);
+  if (confidence === null) {
+    confidenceBadge.hidden = true;
     return;
   }
-  
-  const percent = Math.round(confidence * 100);
-  let level: 'low' | 'medium' | 'high';
-  
-  if (percent >= 70) {
-    level = 'high';
-  } else if (percent >= 40) {
-    level = 'medium';
-  } else {
-    level = 'low';
-  }
-  
-  confidenceBadge.className = `confidence-badge ${level}`;
-  confidenceBadge.textContent = `${level.charAt(0).toUpperCase() + level.slice(1)} (${percent}%)`;
-  confidenceBadge.title = `Confidence: ${percent}%`;
-  confidenceBadge.classList.remove('hidden');
+  confidenceBadge.textContent = `Model confidence ${Math.round(confidence * 100)}%`;
+  confidenceBadge.title = 'How sure the model said it was. It is the model’s own estimate, not a check of the answer.';
+  confidenceBadge.dataset.level = confidenceLevel(confidence);
+  confidenceBadge.hidden = false;
 }
 
-// Switch tabs
-function switchTab(tabName: string) {
-  activeTab = tabName;
-  
-  // Update tab buttons
-  tabButtons.forEach(btn => {
-    const isActive = btn.dataset.tab === tabName;
-    btn.classList.toggle('active', isActive);
-    btn.setAttribute('aria-selected', String(isActive));
-  });
-  
-  // Update tab contents
-  tabContents.forEach(content => {
-    const contentTab = content.id.replace('content-', '');
-    content.hidden = contentTab !== tabName;
-  });
-}
-
-// Setup tab switching
-function setupTabs() {
-  tabButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const tabName = btn.dataset.tab;
-      if (tabName) {
-        switchTab(tabName);
-      }
-    });
-  });
-}
-
-// Update screenshot preview
-function updateScreenshotPreview(dataUrl: string | null) {
-  
-  if (!dataUrl) {
-    screenshotPreview.className = 'screenshot-preview empty';
-    screenshotPreview.innerHTML = `
-      <div class="empty-state-icon">📸</div>
-      <div class="empty-state-title">No screenshot</div>
-      <div class="empty-state-text">Capture a screenshot to see it here</div>
-    `;
-    screenshotMetadata.classList.add('hidden');
-    return;
-  }
-  
-  screenshotPreview.className = 'screenshot-preview';
-  screenshotPreview.replaceChildren();
-  const previewImage = document.createElement('img');
-  if (!/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) return;
-  previewImage.src = dataUrl;
-  previewImage.alt = 'Screenshot';
-  previewImage.id = 'screenshot-img';
-  screenshotPreview.appendChild(previewImage);
-  
-  // Make image clickable to open in modal viewer
-  const img = screenshotPreview.querySelector('#screenshot-img') as HTMLImageElement;
-  if (img) {
-    img.addEventListener('click', () => {
-      openScreenshotViewer(dataUrl);
-    });
-  }
-  
-  screenshotMetadata.classList.remove('hidden');
-}
-
-// Update screenshot metadata
-function updateScreenshotMetadata(metadata: any) {
-  if (!metadata) {
-    screenshotMetadata.innerHTML = '';
-    return;
-  }
-  
-  let html = '';
-  if (metadata.timestamp) {
-    html += `<div class="metadata-item"><strong>Captured:</strong><span>${new Date(metadata.timestamp).toLocaleString()}</span></div>`;
-  }
-  if (metadata.width && metadata.height) {
-    html += `<div class="metadata-item"><strong>Dimensions:</strong><span>${escapeHtml(metadata.width)} × ${escapeHtml(metadata.height)}</span></div>`;
-  }
-  if (metadata.size) {
-    html += `<div class="metadata-item"><strong>Size:</strong><span>${formatBytes(metadata.size)}</span></div>`;
-  }
-  
-  screenshotMetadata.innerHTML = html || '<div class="metadata-item"><span>No metadata available</span></div>';
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-}
-
-// Show toast notification
-function showToast(message: string, type: 'success' | 'info' | 'error' = 'info') {
+function showToast(message: string) {
+  if (!toastEl) return;
   toastEl.textContent = message;
-  toastEl.className = `toast ${type}`;
-  toastEl.classList.add('show');
-  
-  setTimeout(() => {
-    toastEl.classList.remove('show');
-  }, 3000);
+  toastEl.hidden = false;
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => { if (toastEl) toastEl.hidden = true; }, 3000);
 }
 
-// Normalize issue data
-function normalizeIssue(issue: any): any {
-  const type = issue.type || issue.category || 'Issue';
-  const severity = normalizeSeverity(issue?.severity);
-  
-  // Try to extract statement text from various possible fields
-  let statement = issue.risk || issue.text || issue.message || issue.issue || issue.problem || issue.content;
-  
-  // If still no statement and it's an object, try to extract from object properties
-  if (!statement && typeof issue === 'object' && issue !== null) {
-    // Try common text-like properties
-    const textFields = ['description', 'summary', 'note', 'comment', 'title', 'name', 'label'];
-    for (const field of textFields) {
-      if (issue[field] && typeof issue[field] === 'string') {
-        statement = issue[field];
-        break;
-      }
-    }
-    
-    // If still nothing, try to stringify the object in a meaningful way
-    if (!statement) {
-      const entries = Object.entries(issue).filter(([_, v]) => 
-        v !== null && v !== undefined && typeof v === 'string' && v.length > 0
-      );
-      if (entries.length > 0) {
-        statement = entries.map(([k, v]) => `${k}: ${v}`).join(', ');
-      } else {
-        statement = 'Issue detected';
-      }
-    }
+async function copyText(value: string, success: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    showToast(success);
+  } catch (error) {
+    console.error('Failed to copy:', error);
+    showToast("Couldn't copy to the clipboard");
   }
-  
-  // Fallback to string conversion only if it's not an object
-  if (!statement) {
-    statement = typeof issue === 'string' ? issue : 'Issue detected';
-  }
-  
-  const title = statement.length > 80 ? statement.substring(0, 80) + '...' : statement;
-  const details = issue.details || issue.description || issue.explanation || '';
-  const evidence = issue.evidence || issue.proof || issue.location || '';
-  const suggestion = issue.suggestion || issue.fix || issue.recommendation || issue.recommendedFix || '';
-  const slide = issue.slide || issue.page || '';
-  
-  return {
-    type,
-    severity,
-    statement,
-    title,
-    details,
-    evidence,
-    suggestion,
-    slide,
-    raw: issue
-  };
 }
 
-// Filter issues
-function filterIssues(issues: any[]): any[] {
-  if (filterSeverity === 'all') {
-    return issues;
-  }
-  return issues.filter(issue => issue.severity === filterSeverity);
-}
+// ============================================================================
+// Screenshot preview and run metadata
+// ============================================================================
 
-// Sort issues
-function sortIssues(issues: any[]): any[] {
-  const sorted = [...issues];
-  
-  switch (sortMode) {
-    case 'severity': {
-      const severityOrder = { high: 3, medium: 2, low: 1 };
-      sorted.sort((a, b) => (severityOrder[b.severity as keyof typeof severityOrder] || 0) - (severityOrder[a.severity as keyof typeof severityOrder] || 0));
-      break;
-    }
-    case 'slide':
-      sorted.sort((a, b) => {
-        const slideA = parseInt(a.slide) || 0;
-        const slideB = parseInt(b.slide) || 0;
-        return slideA - slideB;
-      });
-      break;
-    case 'type':
-      sorted.sort((a, b) => a.type.localeCompare(b.type));
-      break;
-  }
-  
-  return sorted;
-}
-
-// Render issue card
-function renderIssueCard(issue: any, index: number): string {
-  const hasCollapsible = issue.evidence || issue.suggestion;
-  const isExpanded = allExpanded;
-  
-  let html = `
-    <div class="issue-card" data-issue-index="${index}" data-severity="${issue.severity}">
-      <div class="issue-header">
-        <span class="issue-type-badge">${escapeHtml(issue.type)}</span>
-        <span class="issue-severity-badge ${issue.severity}">${issue.severity}</span>
-        ${issue.slide ? `<span class="issue-slide">— Slide ${escapeHtml(String(issue.slide))}</span>` : ''}
-      </div>
-      <div class="issue-title">${escapeHtml(issue.title)}</div>
-      <div class="issue-statement">${escapeHtml(issue.statement)}</div>
-      ${issue.details ? `<div class="issue-statement" style="margin-top: 8px; font-size: 13px; color: #888;">${escapeHtml(issue.details)}</div>` : ''}
-  `;
-  
-  if (hasCollapsible) {
-    html += `
-      <div class="issue-collapsible ${isExpanded ? 'expanded' : ''}">
-        ${issue.evidence ? `
-          <div class="issue-collapsible-header" data-toggle="evidence-${index}">
-            <span class="issue-collapsible-icon">▶</span>
-            <span>Evidence</span>
-          </div>
-          <div class="issue-collapsible-content" id="evidence-${index}">
-            <div class="issue-evidence">${escapeHtml(issue.evidence)}</div>
-          </div>
-        ` : ''}
-        ${issue.suggestion ? `
-          <div class="issue-collapsible-header" data-toggle="suggestion-${index}">
-            <span class="issue-collapsible-icon">▶</span>
-            <span>Suggested Fix</span>
-          </div>
-          <div class="issue-collapsible-content" id="suggestion-${index}">
-            <div class="issue-suggestion">${escapeHtml(issue.suggestion)}</div>
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-  
-  // Actions
-  html += `
-      <div class="issue-actions">
-        <button class="issue-action-btn copy" data-copy-issue="${index}" title="Copy issue">
-          📋 Copy issue
-        </button>
-      </div>
-    </div>
-  `;
-  
-  return html;
-}
-
-// Detect if response is SDXL format
-function isSDXLFormat(analysis: any): boolean {
-  return !!(analysis.tags || analysis.booru_format || analysis.primary_tags);
-}
-
-// Render SDXL tags tab (replaces issues tab for SDXL responses)
-function renderSDXLTagsTab(analysis: any) {
-  const content = document.getElementById('content-issues') as HTMLDivElement;
-
-  // Update tab label
-  const tabBtn = document.getElementById('tab-issues');
-  if (tabBtn) {
-    tabBtn.innerHTML = 'Tags<span class="tab-badge" id="badge-issues">0</span>';
-  }
-
-  let html = '<div class="tab-content-scrollable">';
-
-  // Primary tags - most important
-  if (analysis.primary_tags && analysis.primary_tags.length > 0) {
-    const badge = document.getElementById('badge-issues');
-    if (badge) badge.textContent = String(analysis.primary_tags.length);
-
-    html += `
-      <div class="section sdxl-section">
-        <div class="section-header">
-          <h3>Primary Tags</h3>
-          <button class="copy-section" data-copy="primary_tags">Copy</button>
-        </div>
-        <div class="sdxl-tags-grid">
-          ${analysis.primary_tags.map((tag: string) => `<span class="sdxl-tag primary">${escapeHtml(tag)}</span>`).join('')}
-        </div>
-      </div>
-    `;
-    sectionCopyData.set('primary_tags', analysis.primary_tags.join(', '));
-  }
-
-  // Booru format - single line copy-friendly
-  if (analysis.booru_format) {
-    html += `
-      <div class="section sdxl-section">
-        <div class="section-header">
-          <h3>Booru Format</h3>
-          <button class="copy-section" data-copy="booru_format">Copy</button>
-        </div>
-        <div class="sdxl-booru-format">${escapeHtml(analysis.booru_format)}</div>
-      </div>
-    `;
-    sectionCopyData.set('booru_format', analysis.booru_format);
-  }
-
-  // Tag categories
-  if (analysis.tags && typeof analysis.tags === 'object') {
-    const categories = ['subject', 'appearance', 'clothing', 'pose_action', 'expression',
-                       'background', 'composition', 'lighting', 'style', 'quality', 'technical'];
-
-    for (const category of categories) {
-      const tags = analysis.tags[category];
-      if (tags && Array.isArray(tags) && tags.length > 0) {
-        const categoryLabel = category.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        html += `
-          <div class="section sdxl-section">
-            <div class="section-header">
-              <h3>${categoryLabel}</h3>
-              <button class="copy-section" data-copy="tags_${category}">Copy</button>
-            </div>
-            <div class="sdxl-tags-grid">
-              ${tags.map((tag: string) => `<span class="sdxl-tag">${escapeHtml(tag)}</span>`).join('')}
-            </div>
-          </div>
-        `;
-        sectionCopyData.set(`tags_${category}`, tags.join(', '));
-      }
-    }
-  }
-
-  // Negative tags
-  if (analysis.negative_tags && analysis.negative_tags.length > 0) {
-    html += `
-      <div class="section sdxl-section">
-        <div class="section-header">
-          <h3>Negative Tags</h3>
-          <button class="copy-section" data-copy="negative_tags">Copy</button>
-        </div>
-        <div class="sdxl-tags-grid">
-          ${analysis.negative_tags.map((tag: string) => `<span class="sdxl-tag negative">${escapeHtml(tag)}</span>`).join('')}
-        </div>
-      </div>
-    `;
-    sectionCopyData.set('negative_tags', analysis.negative_tags.join(', '));
-  }
-
-  html += '</div>';
-  content.innerHTML = html;
-
-  // Wire up copy buttons
-  wireSDXLCopyButtons();
-}
-
-// Wire SDXL copy buttons
-function wireSDXLCopyButtons() {
-  const copyButtons = document.querySelectorAll('.copy-section[data-copy]');
-  copyButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const key = btn.getAttribute('data-copy');
-      if (key && sectionCopyData.has(key)) {
-        navigator.clipboard.writeText(sectionCopyData.get(key) || '').then(() => {
-          showToast('Copied to clipboard', 'success');
-        });
-      }
-    });
-  });
-}
-
-// Render issues tab
-function renderIssuesTab(analysis: ScreenshotAnalysis) {
-  const content = document.getElementById('content-issues') as HTMLDivElement;
-
-  // Check if this is SDXL format
-  if (isSDXLFormat(analysis)) {
-    renderSDXLTagsTab(analysis);
+function setPreview(dataUrl: string | null) {
+  if (!screenshotPreview) return;
+  if (!dataUrl) {
+    screenshotPreview.replaceChildren(...previewEmptyNodes.map(node => node.cloneNode(true)));
+    screenshotPreview.classList.add('is-empty');
+    screenshotPreview.disabled = true;
     return;
   }
+  const image = document.createElement('img');
+  image.alt = 'Captured screenshot';
+  image.addEventListener('load', () => {
+    if (currentScreenshot !== dataUrl) return;
+    runMeta.width = image.naturalWidth;
+    runMeta.height = image.naturalHeight;
+    renderRunMeta();
+  }, { once: true });
+  image.src = dataUrl;
+  screenshotPreview.replaceChildren(image);
+  screenshotPreview.classList.remove('is-empty');
+  screenshotPreview.disabled = false;
+}
 
-  // Reset tab label for non-SDXL
-  const tabBtn = document.getElementById('tab-issues');
-  if (tabBtn) {
-    tabBtn.innerHTML = 'Issues<span class="tab-badge" id="badge-issues">0</span>';
+function receiveScreenshot(dataUrl: string) {
+  if (!SCREENSHOT_DATA_URL.test(dataUrl)) return;
+  currentScreenshot = dataUrl;
+  runMeta = { capturedAt: Date.now() };
+  setPreview(dataUrl);
+  renderRunMeta();
+  updateControls();
+}
+
+/** "Image + 12 context files + custom prompt": everything the provider received. */
+function describeSent(sent: SentSummary): string {
+  const parts = ['Image'];
+  if (sent.contextFiles > 0) parts.push(`${sent.contextFiles} context ${sent.contextFiles === 1 ? 'file' : 'files'}`);
+  if (sent.customPrompt) parts.push('custom prompt');
+  return parts.join(' + ');
+}
+
+function renderRunMeta() {
+  if (!screenshotMetadata) return;
+  const meta = runMeta;
+  const model = meta.model && meta.model !== 'unknown' ? meta.model : undefined;
+  const hasTokens = typeof meta.promptTokens === 'number' && typeof meta.completionTokens === 'number' && meta.promptTokens + meta.completionTokens > 0;
+  const sendLabel = meta.sendState === 'sending' ? 'Sending to' : meta.sendState === 'not-sent' ? 'Not sent to' : 'Sent to';
+  const rows: Array<[string, string | undefined, boolean]> = [
+    [sendLabel, providerLabel(meta.provider) || undefined, false],
+    ['Included', meta.sendState === 'sent' && meta.sent ? describeSent(meta.sent) : undefined, false],
+    ['Model', model, true],
+    ['Duration', typeof meta.durationMs === 'number' && meta.durationMs > 0 ? formatSeconds(meta.durationMs) : undefined, true],
+    ['Tokens', hasTokens ? formatTokens(meta.promptTokens!, meta.completionTokens!, 'en-US') : undefined, true],
+    ['Image', meta.width && meta.height ? `${meta.width} × ${meta.height}` : undefined, true],
+    ['Captured', meta.capturedAt ? new Date(meta.capturedAt).toLocaleTimeString() : undefined, false],
+  ];
+  screenshotMetadata.replaceChildren(...rows.filter(([, value]) => value).map(([label, value, mono]) => {
+    const row = document.createElement('div');
+    row.className = 'run-meta-row';
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const description = document.createElement('dd');
+    if (mono) description.className = 'mono';
+    description.textContent = value!;
+    row.append(term, description);
+    return row;
+  }));
+}
+
+// ============================================================================
+// Views: welcome, error, results
+// ============================================================================
+
+function showView(view: 'welcome' | 'error' | 'results') {
+  if (welcome) welcome.hidden = view !== 'welcome';
+  if (errorPanel) errorPanel.hidden = view !== 'error';
+  if (results) results.hidden = view !== 'results';
+}
+
+function syncShortcutLabels() {
+  const label = isMac ? '⌘⇧S' : 'Ctrl+Shift+S';
+  const capture = byId('capture-shortcut');
+  if (capture) capture.textContent = label;
+  document.querySelectorAll<HTMLElement>('kbd[data-shortcut]').forEach(kbd => { kbd.textContent = label; });
+}
+
+async function loadWelcome() {
+  syncShortcutLabels();
+  try {
+    const [provider, model] = await Promise.all([api.settings.get('provider'), api.settings.get('model')]);
+    settingsProvider = provider === 'openai' || provider === 'anthropic' ? provider : undefined;
+    settingsModel = typeof model === 'string' && model ? model : undefined;
+  } catch (error) {
+    console.error('Failed to read provider settings:', error);
   }
+  // Settings default to OpenAI, so an unreadable or unset provider still gets a key check.
+  const provider: Provider = settingsProvider ?? 'openai';
+  const label = providerLabel(provider);
+  const welcomeProvider = byId('welcome-provider');
+  if (welcomeProvider) welcomeProvider.textContent = settingsModel ? `${label} (${settingsModel})` : label;
+  try {
+    const status = await api.settings.getApiKeyStatus(provider);
+    keyMissing = status?.hasKey === false;
+  } catch (error) {
+    console.error('Failed to read API key status:', error);
+  }
+  try {
+    const context = byId('welcome-context');
+    if (context) context.hidden = (await api.settings.get('workspaceContextEnabled')) !== true;
+  } catch (error) {
+    console.error('Failed to read context setting:', error);
+  }
+  const keyProvider = byId('welcome-key-provider');
+  if (keyProvider) keyProvider.textContent = label;
+  const warning = byId('welcome-key-warning');
+  if (warning) warning.hidden = !keyMissing;
+  updateControls();
+}
 
-  const issues = analysis.issues || [];
+/** With no key stored, Capture explains what is missing instead of opening the overlay. */
+function showMissingKey() {
+  const label = providerLabel(settingsProvider ?? 'openai');
+  showError({ code: 'AUTH_ERROR', message: `No API key is stored for ${label}. Add one in Settings > API Keys.`, retryable: false, sent: null });
+}
 
-  if (issues.length === 0) {
-    content.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon">✅</div>
-        <div class="empty-state-title">No issues found</div>
-        <div class="empty-state-text">Great! No issues were detected in this screenshot.</div>
-      </div>
-    `;
+function clearRetryCountdown() {
+  if (retryTimer !== undefined) window.clearInterval(retryTimer);
+  retryTimer = undefined;
+  retryReadyAt = 0;
+}
+
+function runErrorAction(action: ErrorAction) {
+  if (action.kind === 'retry') {
+    if (!retryBlocked()) api.analysis.retry();
+  } else if (action.kind === 'capture') {
+    startCapture();
+  }
+}
+
+/**
+ * Rate-limit countdown. The button stays focusable (aria-disabled, not disabled) so keyboard and
+ * screen-reader users keep their place; the live status line announces only start and end.
+ */
+function startRetryCountdown(button: HTMLButtonElement, seconds: number, title: string) {
+  retryReadyAt = Date.now() + seconds * 1000;
+  const render = () => {
+    const remaining = Math.max(0, Math.ceil((retryReadyAt - Date.now()) / 1000));
+    button.setAttribute('aria-disabled', String(remaining > 0));
+    button.textContent = remaining > 0 ? `Try again in ${remaining}s` : 'Try again';
+    return remaining;
+  };
+  render();
+  // Announced once; the button carries the live count, so this line never goes stale.
+  setStatus('error', `${title}. Try again unlocks when the wait is over.`);
+  retryTimer = window.setInterval(() => {
+    if (render() > 0) return;
+    window.clearInterval(retryTimer);
+    retryTimer = undefined;
+    retryReadyAt = 0;
+    setStatus('error', 'Ready to try again');
+    updateControls();
+  }, 1000);
+}
+
+function showError(payload: ErrorPayload) {
+  const code = String(payload?.code ?? 'UNKNOWN_ERROR');
+  const message = String(payload?.message ?? '');
+  if (code === 'CANCELLED') {
+    restorePreviousView('Cancelled');
     return;
   }
-  
-  // Normalize and store issues
-  allIssues = issues.map(normalizeIssue);
-  
-  // Filter and sort
-  filteredIssues = sortIssues(filterIssues(allIssues));
-  
-  // Count by severity
-  const counts = {
-    all: allIssues.length,
-    high: allIssues.filter(i => i.severity === 'high').length,
-    medium: allIssues.filter(i => i.severity === 'medium').length,
-    low: allIssues.filter(i => i.severity === 'low').length
+  const metadata = (payload?.metadata ?? {}) as { provider?: string; model?: string };
+  const provider = runMeta.provider ?? metadata.provider ?? settingsProvider;
+  const model = runMeta.model ?? metadata.model ?? settingsModel;
+  const copy = describeError(code, message, { provider, model, retryAfterSeconds: resolveRetryAfter(payload ?? {}) })!;
+
+  stopElapsed();
+  clearRetryCountdown();
+  phase = 'error';
+  if (payload && 'sent' in payload) {
+    runMeta.sendState = payload.sent === null ? 'not-sent' : 'sent';
+    runMeta.sent = payload.sent;
+  } else if (runMeta.sendState === 'sending') {
+    runMeta.sendState = 'sent';
+  }
+  renderRunMeta();
+  byId('error-title')!.textContent = copy.title;
+  const body = byId('error-body');
+  if (body) body.textContent = copy.body;
+  const raw = byId('error-raw');
+  if (raw) raw.textContent = message ? `${code}: ${message}` : code;
+  const actions = byId('error-actions');
+  actions?.replaceChildren(...copy.actions.map((action, index) => {
+    const className = `btn ${index === 0 ? 'btn-primary' : 'btn-secondary'}`;
+    if (action.kind === 'link') {
+      const link = document.createElement('a');
+      link.className = className;
+      link.href = action.href;
+      link.textContent = action.label;
+      return link;
+    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.dataset.action = action.kind;
+    button.textContent = action.label;
+    button.addEventListener('click', () => runErrorAction(action));
+    return button;
+  }) ?? []);
+  showView('error');
+  updateConfidence(null);
+  setStatus('error', copy.title);
+  const retryButton = actions?.querySelector<HTMLButtonElement>('[data-action="retry"]');
+  if (retryButton && copy.retryAfterSeconds) startRetryCountdown(retryButton, copy.retryAfterSeconds, copy.title);
+  updateControls();
+  // Move focus to the error so keyboard and screen-reader users land on it.
+  const title = byId('error-title');
+  if (title) {
+    title.tabIndex = -1;
+    title.focus();
+  }
+}
+
+/** After a cancel: show the previous result if there is one, otherwise the welcome state. */
+function restorePreviousView(status: string) {
+  stopElapsed();
+  if (lastResult && lastResultView) {
+    currentScreenshot = lastResultView.screenshot;
+    setPreview(currentScreenshot);
+    runMeta = { ...lastResultView.meta };
+    renderResult(lastResult, status);
+    return;
+  }
+  // No earlier result: drop the abandoned capture too, so the welcome state isn't paired with it.
+  phase = 'idle';
+  currentScreenshot = null;
+  runMeta = {};
+  setPreview(null);
+  renderRunMeta();
+  showView('welcome');
+  setStatus('idle', status);
+  updateControls();
+}
+
+function onProcessing(payload: ProcessingPayload) {
+  const stage = payload?.stage;
+  if (stage === 'cancelled') {
+    restorePreviousView('Ready');
+    return;
+  }
+  if (welcome) welcome.hidden = true;
+  if (stage === 'capture') {
+    phase = 'capturing';
+    clearRetryCountdown();
+    setStatus('working', 'Select a region…');
+    updateControls();
+    return;
+  }
+  if (stage !== 'analyzing') return;
+
+  phase = 'analyzing';
+  clearRetryCountdown();
+  if (payload.screenshotDataUrl) receiveScreenshot(payload.screenshotDataUrl);
+  const provider = payload.provider ?? settingsProvider;
+  const model = payload.model ?? settingsModel;
+  runMeta = { ...runMeta, sendState: 'sending', sent: undefined, provider, model, durationMs: undefined, promptTokens: undefined, completionTokens: undefined };
+  renderRunMeta();
+  resetResultPanels();
+  showView('results');
+  switchTab('summary');
+  updateConfidence(null);
+  resetFeedback();
+  setStatus('working', `Analyzing with ${providerLabel(provider) || 'your AI provider'}`);
+  startElapsed(model);
+  if (cancelBtn) cancelBtn.disabled = false;
+  updateControls();
+}
+
+function resetResultPanels() {
+  // Every panel shows the same in-progress state, so no tab is a blank focus stop while analyzing.
+  for (const tab of TABS) {
+    const panel = byId(`content-${tab}`);
+    if (panel) panel.innerHTML = '<div class="loading-state"><div class="spinner" aria-hidden="true"></div><p class="loading-text">Analyzing the selected region…</p></div>';
+  }
+  for (const badge of ['badge-issues', 'badge-notes']) {
+    const element = byId(badge);
+    if (element) element.textContent = '';
+  }
+}
+
+function onResult(response: ResultPayload) {
+  if (!response?.success || !response.data) {
+    showError({
+      code: response?.error?.code ?? 'UNKNOWN_ERROR',
+      message: response?.error?.message ?? 'Analysis failed',
+      retryAfterSeconds: response?.error?.retryAfterSeconds,
+      metadata: response?.metadata,
+      sent: response?.sent,
+    });
+    return;
+  }
+  renderResult(response);
+}
+
+function renderResult(response: ResultPayload, statusOverride?: string) {
+  const data = response.data!;
+  const meta = response.metadata;
+  stopElapsed();
+  clearRetryCountdown();
+  phase = 'success';
+  lastResult = response;
+  runMeta = {
+    ...runMeta,
+    sendState: 'sent',
+    sent: response.sent ?? runMeta.sent,
+    provider: meta?.provider ?? runMeta.provider,
+    model: meta?.model ?? runMeta.model,
+    durationMs: meta?.latencyMs,
+    promptTokens: meta?.promptTokens,
+    completionTokens: meta?.completionTokens,
   };
-  
-  // Update badge
-  const badge = document.getElementById('badge-issues');
-  if (badge) badge.textContent = String(allIssues.length);
-  
-  // Render toolbar
-  const toolbarHtml = `
-    <div class="issues-toolbar">
-      <div class="issues-header">
-        ${filteredIssues.length} issue${filteredIssues.length !== 1 ? 's' : ''} found
-        ${counts.high > 0 ? ` • ${counts.high} high severity` : ''}
-      </div>
-      <div class="filter-chips">
-        <button class="filter-chip ${filterSeverity === 'all' ? 'active' : ''}" data-filter="all">
-          All (${counts.all})
-        </button>
-        <button class="filter-chip ${filterSeverity === 'high' ? 'active' : ''}" data-filter="high">
-          High (${counts.high})
-        </button>
-        <button class="filter-chip ${filterSeverity === 'medium' ? 'active' : ''}" data-filter="medium">
-          Medium (${counts.medium})
-        </button>
-        <button class="filter-chip ${filterSeverity === 'low' ? 'active' : ''}" data-filter="low">
-          Low (${counts.low})
-        </button>
-      </div>
-      <select class="sort-select" id="sort-select">
-        <option value="severity" ${sortMode === 'severity' ? 'selected' : ''}>Severity (High → Low)</option>
-        <option value="slide" ${sortMode === 'slide' ? 'selected' : ''}>Slide Order</option>
-        <option value="type" ${sortMode === 'type' ? 'selected' : ''}>Type</option>
-      </select>
-      <button class="expand-toggle" id="expand-toggle">
-        ${allExpanded ? 'Collapse All' : 'Expand All'}
-      </button>
-    </div>
-  `;
-  
-  // Render issue cards
-  let cardsHtml = '';
-  filteredIssues.forEach((issue, index) => {
-    cardsHtml += renderIssueCard(issue, index);
-  });
-  
-  const listHtml = filteredIssues.length > 0 ? `<div class="tab-content-scrollable" id="issues-list">${cardsHtml}</div>` : `
-    <div class="tab-content-scrollable">
-      <div class="empty-state">
-        <div class="empty-state-icon">🔍</div>
-        <div class="empty-state-title">No issues match filter</div>
-        <div class="empty-state-text">Try selecting a different severity filter.</div>
-      </div>
-    </div>
-  `;
-  
-  content.innerHTML = toolbarHtml + listHtml;
-  
-  // Wire up event listeners
-  wireIssuesTabEvents();
+  lastResultView = { screenshot: currentScreenshot, meta: { ...runMeta } };
+  renderRunMeta();
+
+  filterSeverity = 'all';
+  allExpanded = false;
+  renderSummaryTab(data);
+  renderIssuesTab(data);
+  renderNotesTab(data);
+  renderRawTab(response);
+  showView('results');
+  switchTab('summary');
+  updateConfidence(data.confidence);
+  resetFeedback();
+  // Provider, model and duration live in the side pane; the status line summarizes the outcome.
+  const issueCount = data.issues?.length ?? 0;
+  const outcome = issueCount ? `Analysis complete · ${issueCount} issue${issueCount === 1 ? '' : 's'}` : 'Analysis complete';
+  setStatus(statusOverride ? 'idle' : 'success', statusOverride ?? outcome);
+  updateControls();
 }
 
-// Wire up issues tab event listeners
-function wireIssuesTabEvents() {
-  // Filter chips
-  const filterChips = document.querySelectorAll('.filter-chip');
-  filterChips.forEach(chip => {
-    chip.addEventListener('click', () => {
-      const filter = chip.getAttribute('data-filter') as 'all' | 'high' | 'medium' | 'low';
-      filterSeverity = filter;
-      if (lastResult?.success && lastResult.data) {
-        renderIssuesTab(lastResult.data);
-      }
-    });
-  });
-  
-  // Sort select
-  const sortSelect = document.getElementById('sort-select') as HTMLSelectElement;
-  if (sortSelect) {
-    sortSelect.addEventListener('change', () => {
-      sortMode = sortSelect.value as 'severity' | 'slide' | 'type';
-      if (lastResult?.success && lastResult.data) {
-        renderIssuesTab(lastResult.data);
-      }
-    });
+// ============================================================================
+// Tabs (APG tabs pattern with automatic activation)
+// ============================================================================
+
+function switchTab(name: TabName, focus = false) {
+  for (const tab of TABS) {
+    const selected = tab === name;
+    const button = byId(`tab-${tab}`);
+    if (button) {
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      if (selected && focus) button.focus();
+    }
+    const panel = byId(`content-${tab}`);
+    if (panel) panel.hidden = !selected;
   }
-  
-  // Expand/collapse toggle
-  const expandToggle = document.getElementById('expand-toggle');
-  if (expandToggle) {
-    expandToggle.addEventListener('click', () => {
-      allExpanded = !allExpanded;
-      const cards = document.querySelectorAll('.issue-card');
-      cards.forEach(card => {
-        const collapsible = card.querySelector('.issue-collapsible');
-        if (collapsible) {
-          if (allExpanded) {
-            collapsible.classList.add('expanded');
-          } else {
-            collapsible.classList.remove('expanded');
-          }
-        }
-      });
-      expandToggle.textContent = allExpanded ? 'Collapse All' : 'Expand All';
-    });
-  }
-  
-  // Collapsible headers
-  const collapsibleHeaders = document.querySelectorAll('.issue-collapsible-header');
-  collapsibleHeaders.forEach(header => {
-    header.addEventListener('click', () => {
-      const toggleId = header.getAttribute('data-toggle');
-      if (toggleId) {
-        const content = document.getElementById(toggleId);
-        const collapsible = header.closest('.issue-collapsible');
-        if (content && collapsible) {
-          const isExpanded = collapsible.classList.contains('expanded');
-          if (isExpanded) {
-            collapsible.classList.remove('expanded');
-          } else {
-            collapsible.classList.add('expanded');
-          }
-        }
-      }
-    });
-  });
-  
-  // Copy issue buttons
-  const copyButtons = document.querySelectorAll('[data-copy-issue]');
-  copyButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const index = parseInt(btn.getAttribute('data-copy-issue') || '0');
-      const issue = filteredIssues[index];
-      if (issue) {
-        let text = `[${issue.type}] ${issue.severity.toUpperCase()}`;
-        if (issue.slide) text += ` - Slide ${issue.slide}`;
-        text += `\n\n${issue.statement}`;
-        if (issue.details) text += `\n\n${issue.details}`;
-        if (issue.evidence) text += `\n\nEvidence: ${issue.evidence}`;
-        if (issue.suggestion) text += `\n\nSuggested Fix: ${issue.suggestion}`;
-        
-        navigator.clipboard.writeText(text).then(() => {
-          showToast(`Copied issue to clipboard`, 'success');
-        }).catch(err => {
-          console.error('Failed to copy:', err);
-          showToast('Failed to copy to clipboard', 'error');
-        });
-      }
-    });
+}
+
+function setupTabs() {
+  TABS.forEach(tab => byId(`tab-${tab}`)?.addEventListener('click', () => switchTab(tab)));
+  byId('tab-summary')?.closest('[role="tablist"]')?.addEventListener('keydown', event => {
+    const keyEvent = event as KeyboardEvent;
+    const current = TABS.findIndex(tab => byId(`tab-${tab}`) === document.activeElement);
+    if (current < 0) return;
+    const next = ({
+      ArrowRight: (current + 1) % TABS.length,
+      ArrowLeft: (current - 1 + TABS.length) % TABS.length,
+      Home: 0,
+      End: TABS.length - 1,
+    } as Record<string, number>)[keyEvent.key];
+    if (next === undefined) return;
+    keyEvent.preventDefault();
+    switchTab(TABS[next], true);
   });
 }
 
-// Render summary tab
+function setBadge(id: string, count: number) {
+  const badge = byId(id);
+  if (badge) badge.textContent = String(count);
+}
+
+function emptyState(iconName: string, title: string, text: string): string {
+  return `<div class="empty-state"><div class="empty-state-icon">${icon(iconName)}</div><p class="empty-state-title">${escapeHtml(title)}</p><p class="empty-state-text">${escapeHtml(text)}</p></div>`;
+}
+
+// ============================================================================
+// Answer tab
+// ============================================================================
+
 function renderSummaryTab(analysis: ScreenshotAnalysis) {
-  const content = document.getElementById('content-summary') as HTMLDivElement;
+  const content = byId('content-summary');
+  if (!content) return;
+  const answer = extractAnswer(analysis.answer);
+  const summary = summaryToText(analysis.summary);
+  const primary = answer.response || summary;
   let html = '';
 
-  // Check if this is SDXL format - show caption and natural language
-  if (isSDXLFormat(analysis)) {
-    const sdxl = analysis as any;
+  if (primary) {
+    const parts = formatAnswerParts(primary);
+    html += '<div class="answer">';
+    if (answer.question) html += `<div class="answer-question"><span class="answer-label">Question</span> ${escapeHtml(answer.question)}</div>`;
+    if (parts.lead) html += `<p class="answer-lead">${parts.lead}</p>`;
+    if (parts.body) html += `<div class="answer-body prose">${parts.body}</div>`;
+    if (answer.response && answer.explanation) html += `<div class="prose">${wrapProse(formatAnswer(answer.explanation))}</div>`;
+    if (answer.response && summary) html += `<h3 class="section-title">Summary</h3><div class="prose">${wrapProse(formatAnswer(summary))}</div>`;
+    html += '</div>';
+  }
 
-    // Caption (BLIP-style single sentence)
-    if (sdxl.caption) {
-      html += `
-        <div class="section sdxl-section">
-          <div class="section-header">
-            <h3>Caption</h3>
-            <button class="copy-section" data-copy="caption">Copy</button>
-          </div>
-          <div class="sdxl-caption">${escapeHtml(sdxl.caption)}</div>
-        </div>
-      `;
-      sectionCopyData.set('caption', sdxl.caption);
-    }
+  if (primary) html += '<div class="answer-actions"><button type="button" class="btn btn-secondary btn-sm" id="copy-answer">Copy answer</button></div>';
 
-    // Natural language description
-    if (sdxl.natural_language) {
-      html += `
-        <div class="section sdxl-section">
-          <div class="section-header">
-            <h3>Natural Language Description</h3>
-            <button class="copy-section" data-copy="natural_language">Copy</button>
-          </div>
-          <div class="sdxl-natural-language">${escapeHtml(sdxl.natural_language)}</div>
-        </div>
-      `;
-      sectionCopyData.set('natural_language', sdxl.natural_language);
-    }
+  const extracted = typeof analysis.text === 'string' ? analysis.text.trim() : '';
+  if (extracted) html += `<section class="extracted"><h3 class="section-title">Extracted text</h3>${renderCodeBlock(extracted)}</section>`;
 
-    if (html) {
-      content.innerHTML = `<div class="tab-content-scrollable">${html}</div>`;
-      wireSDXLCopyButtons();
+  const codeBlocks = (analysis.codeBlocks ?? []).filter(block => block && typeof block.code === 'string' && block.code.trim());
+  if (codeBlocks.length) {
+    html += `<section class="extracted"><h3 class="section-title">Code</h3>${codeBlocks.map(block => renderCodeBlock(block.code, /^[\w+#.-]+$/.test(block.language ?? '') ? block.language : '')).join('')}</section>`;
+  }
+
+  content.innerHTML = html || emptyState('file-text', 'No answer in this result', 'The model returned no answer, summary or extracted text. The JSON tab shows the full response.');
+  addCodeCopyButtons(content);
+}
+
+/** Each code block gets its own Copy button, labelled by language when there is one. */
+function addCodeCopyButtons(root: HTMLElement) {
+  root.querySelectorAll<HTMLElement>('div.code-block').forEach(block => {
+    if (block.querySelector('.code-copy')) return;
+    const lang = block.querySelector('.code-lang')?.textContent?.trim();
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-ghost btn-sm code-copy';
+    button.textContent = 'Copy';
+    button.setAttribute('aria-label', lang ? `Copy ${lang} code` : 'Copy code');
+    block.classList.add('has-copy');
+    block.append(button);
+  });
+}
+
+function setupSummaryTab() {
+  byId('content-summary')?.addEventListener('click', event => {
+    const target = event.target as HTMLElement;
+    const codeCopy = target.closest('.code-copy');
+    if (codeCopy) {
+      const code = codeCopy.closest('.code-block')?.querySelector('pre')?.textContent ?? '';
+      void copyText(code, 'Copied code');
       return;
     }
-  }
-
-  // Check for answer object with detected question (from custom prompt)
-  const answerObj = analysis.answer as any;
-  if (answerObj && typeof answerObj === 'object' && answerObj.detected === true) {
-    // Render prominent answer box
-    html += `
-      <div class="answer-highlight">
-        <div class="answer-highlight-label">
-          <span class="answer-checkmark">✓</span>
-          Answer
-        </div>
-        <div class="answer-highlight-response">${formatAnswer(answerObj.response || '')}</div>
-        ${answerObj.explanation ? `<div class="answer-highlight-explanation">${escapeHtml(answerObj.explanation)}</div>` : ''}
-        ${answerObj.question ? `<div class="answer-highlight-question"><strong>Question:</strong> ${escapeHtml(answerObj.question)}</div>` : ''}
-      </div>
-    `;
-
-    // Register for copy
-    sectionCopyData.set('answer', answerObj.response || '');
-  } else if (analysis.answer && typeof analysis.answer === 'string') {
-    // Handle legacy string answer format
-    html += `
-      <div class="answer-highlight">
-        <div class="answer-highlight-label">
-          <span class="answer-checkmark">✓</span>
-          Answer
-        </div>
-        <div class="answer-highlight-response">${formatAnswer(analysis.answer)}</div>
-      </div>
-    `;
-    sectionCopyData.set('answer', analysis.answer);
-  }
-
-  // Render summary
-  if (analysis.summary) {
-    let summaryText: string;
-    let isArray = false;
-    
-    if (typeof analysis.summary === 'string') {
-      summaryText = analysis.summary.trim();
-    } else if (Array.isArray(analysis.summary)) {
-      // Handle array of bullets
-      isArray = true;
-      summaryText = analysis.summary.map(s => String(s).trim()).filter(s => s.length > 0).join('\n');
-      
-      html += `<div class="section summary-section">
-        <div class="section-header"><h3>Summary</h3></div>
-        <ul class="summary-list">`;
-      analysis.summary.forEach((bullet: any) => {
-        const bulletText = typeof bullet === 'string' ? bullet : 
-                          (bullet?.text || bullet?.content || String(bullet));
-        html += `<li>${escapeHtml(bulletText.trim())}</li>`;
-      });
-      html += `</ul></div>`;
-      sectionCopyData.set('summary', summaryText);
-    } else if (typeof analysis.summary === 'object' && analysis.summary !== null) {
-      // Try to extract text from object
-      summaryText = (analysis.summary as any).text || 
-                   (analysis.summary as any).content || 
-                   (analysis.summary as any).description || 
-                   (analysis.summary as any).summary || '';
-      
-      // If still empty, try to stringify meaningful properties
-      if (!summaryText) {
-        const entries = Object.entries(analysis.summary).filter(([_k, v]) =>
-          v !== null && v !== undefined && typeof v === 'string' && v.length > 0
-        );
-        if (entries.length > 0) {
-          summaryText = entries.map(([k, v]) => `${k}: ${v}`).join('\n');
-        } else {
-          summaryText = JSON.stringify(analysis.summary);
-        }
-      }
-      summaryText = summaryText.trim();
-    } else {
-      summaryText = String(analysis.summary).trim();
+    if (target.closest('#copy-answer') && lastResult?.data) {
+      const answer = extractAnswer(lastResult.data.answer);
+      const text = answer.response || summaryToText(lastResult.data.summary);
+      if (text) void copyText(text, 'Copied answer');
     }
-
-    // Only render paragraph format if not already rendered as bullets
-    if (!isArray && summaryText) {
-      // Clean up the text - normalize whitespace but preserve intentional line breaks
-      summaryText = summaryText
-        .replace(/\r\n/g, '\n')  // Normalize line endings
-        .replace(/\r/g, '\n')
-        .replace(/[ \t]+/g, ' ')  // Collapse multiple spaces/tabs
-        .trim();
-      
-      // Split into paragraphs by double newlines first (preserves intentional paragraph breaks)
-      let paragraphs = summaryText.split(/\n\s*\n+/).filter(p => p.trim().length > 0);
-      
-      // If no double newlines, check if it's a single long paragraph
-      if (paragraphs.length === 1) {
-        const text = paragraphs[0];
-        
-        // For very long text (>300 chars), try to split by sentences
-        if (text.length > 300) {
-          // Split by sentence endings followed by space and capital letter
-          const sentences = text.split(/([.!?])\s+(?=[A-Z])/).filter(s => s && s.trim().length > 0);
-          
-          if (sentences.length > 1) {
-            // Reconstruct sentences (the split includes punctuation as separate items)
-            const reconstructed: string[] = [];
-            for (let i = 0; i < sentences.length; i += 2) {
-              const sentence = sentences[i] + (sentences[i + 1] || '');
-              if (sentence.trim()) {
-                reconstructed.push(sentence.trim());
-              }
-            }
-            
-            // Group into paragraphs of 2-3 sentences
-            paragraphs = [];
-            let currentPara = '';
-            for (let i = 0; i < reconstructed.length; i++) {
-              currentPara += (currentPara ? ' ' : '') + reconstructed[i];
-              // Start new paragraph every 2-3 sentences
-              if ((i + 1) % 3 === 0 || i === reconstructed.length - 1) {
-                paragraphs.push(currentPara);
-                currentPara = '';
-              }
-            }
-          }
-        }
-      }
-
-      // Format paragraphs with consistent styling
-      const formattedSummary = paragraphs
-        .map(p => p.trim())
-        .filter(p => p.length > 0)
-        .map(p => `<p class="summary-paragraph">${escapeHtml(p)}</p>`)
-        .join('');
-
-      html += `<div class="section summary-section">
-        <div class="section-header"><h3>Summary</h3></div>
-        <div class="summary-content">${formattedSummary}</div>
-      </div>`;
-      sectionCopyData.set('summary', summaryText);
-    }
-  }
-
-  if (html) {
-    content.innerHTML = `<div class="tab-content-scrollable">${html}</div>`;
-  } else {
-    content.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon">📄</div>
-        <div class="empty-state-title">No summary available</div>
-        <div class="empty-state-text">Summary will appear here after analysis</div>
-      </div>
-    `;
-  }
+  });
 }
 
-// Render notes tab
+/** formatAnswer returns a lone paragraph as inline HTML; give it a <p> inside block containers. */
+function wrapProse(html: string): string {
+  return /^<(p|ul|ol|div)[\s>]/.test(html) ? html : `<p>${html}</p>`;
+}
+
+// ============================================================================
+// Issues tab
+// ============================================================================
+
+const SEVERITY_RANK = { high: 3, medium: 2, low: 1 };
+const SEVERITY_LABEL = { high: 'High', medium: 'Medium', low: 'Low' };
+/** Below this many issues the severity filter chips add nothing; the summary line covers it. */
+const ISSUE_FILTER_MIN = 5;
+
+function renderIssuesTab(analysis: ScreenshotAnalysis) {
+  issues = (analysis.issues ?? []).map(normalizeIssue);
+  setBadge('badge-issues', issues.length);
+  renderIssueList();
+}
+
+function renderIssueList(focusFilter?: string) {
+  const content = byId('content-issues');
+  if (!content) return;
+  if (!issues.length) {
+    content.innerHTML = emptyState('check-circle', 'No issues found', 'Nothing in this capture was flagged.');
+    return;
+  }
+  const counts = {
+    all: issues.length,
+    high: issues.filter(issue => issue.severity === 'high').length,
+    medium: issues.filter(issue => issue.severity === 'medium').length,
+    low: issues.filter(issue => issue.severity === 'low').length,
+  };
+  const showChips = issues.length >= ISSUE_FILTER_MIN;
+  if (filterSeverity !== 'all' && (!showChips || counts[filterSeverity] === 0)) filterSeverity = 'all';
+  visibleIssues = issues.filter(issue => filterSeverity === 'all' || issue.severity === filterSeverity);
+  visibleIssues.sort(sortMode === 'type'
+    ? (a, b) => a.type.localeCompare(b.type)
+    : (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+
+  const summary = `${issues.length} issue${issues.length === 1 ? '' : 's'}${counts.high ? ` · ${counts.high} high` : ''}`;
+  const chips = showChips
+    ? `<div class="chip-group" role="group" aria-label="Filter by severity">${(['all', 'high', 'medium', 'low'] as const)
+      .filter(key => counts[key] > 0)
+      .map(key => `<button type="button" class="chip" data-filter="${key}" aria-pressed="${filterSeverity === key}">${key === 'all' ? 'All' : SEVERITY_LABEL[key]} (${counts[key]})</button>`)
+      .join('')}</div>`
+    : '';
+  const hasDisclosures = issues.some(issue => issue.evidence || issue.suggestion);
+  const toolbar = `<div class="issues-toolbar"><span class="issues-count">${summary}</span>`
+    + `<span class="issues-sort"><label class="issues-sort-label" for="issues-sort">Sort</label>`
+    + `<select id="issues-sort" class="select" aria-label="Sort issues"><option value="severity"${sortMode === 'severity' ? ' selected' : ''}>Severity</option><option value="type"${sortMode === 'type' ? ' selected' : ''}>Type</option></select></span>`
+    + (hasDisclosures ? `<button type="button" id="expand-all" class="btn btn-ghost btn-sm">${allExpanded ? 'Collapse all' : 'Expand all'}</button>` : '')
+    + `${chips}</div>`;
+
+  content.innerHTML = `${toolbar}<div class="issue-list">${visibleIssues.map(renderIssueCard).join('')}</div>`;
+  if (focusFilter) content.querySelector<HTMLElement>(`[data-filter="${focusFilter}"]`)?.focus();
+}
+
+function renderDisclosure(id: string, label: string, text: string): string {
+  return `<div class="disclosure"><button type="button" class="disclosure-toggle" aria-expanded="${allExpanded}" aria-controls="${id}">${label}${icon('chevron-right', 'disclosure-chevron')}</button>`
+    + `<div class="disclosure-panel" id="${id}"${allExpanded ? '' : ' hidden'}><div class="disclosure-body"><p>${escapeHtml(text)}</p></div></div></div>`;
+}
+
+function renderIssueCard(issue: NormalizedIssue, index: number): string {
+  return `<article class="issue-card" data-severity="${issue.severity}">`
+    + `<header class="issue-head"><span class="sev sev-${issue.severity}">${SEVERITY_LABEL[issue.severity]}</span>`
+    + `<span class="issue-type">${escapeHtml(issue.type)}</span><h3 class="issue-title">${escapeHtml(issue.title)}</h3></header>`
+    + `<div class="issue-foot"><button type="button" class="btn btn-ghost btn-sm copy-issue" data-issue-index="${index}" aria-label="Copy issue: ${escapeHtml(issue.title)}">Copy</button></div>`
+    + (issue.statement !== issue.title ? `<p class="issue-statement">${escapeHtml(issue.statement)}</p>` : '')
+    + (issue.details ? `<p class="issue-details">${escapeHtml(issue.details)}</p>` : '')
+    + (issue.evidence ? renderDisclosure(`issue-${index}-evidence`, 'Evidence', issue.evidence) : '')
+    + (issue.suggestion ? renderDisclosure(`issue-${index}-fix`, 'Suggested fix', issue.suggestion) : '')
+    + '</article>';
+}
+
+function setDisclosure(toggle: HTMLElement, expanded: boolean) {
+  toggle.setAttribute('aria-expanded', String(expanded));
+  const panel = byId(toggle.getAttribute('aria-controls') ?? '');
+  if (panel) panel.hidden = !expanded;
+}
+
+function setupIssuesTab() {
+  const content = byId('content-issues');
+  if (!content) return;
+  content.addEventListener('click', event => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>('button');
+    if (!target || !content.contains(target)) return;
+    if (target.dataset.filter) {
+      filterSeverity = target.dataset.filter as typeof filterSeverity;
+      renderIssueList(target.dataset.filter);
+    } else if (target.classList.contains('disclosure-toggle')) {
+      setDisclosure(target, target.getAttribute('aria-expanded') !== 'true');
+      // Keep the bulk toggle honest: it reads "Collapse all" only while every disclosure is open.
+      const toggles = Array.from(content.querySelectorAll<HTMLElement>('.disclosure-toggle'));
+      allExpanded = toggles.every(toggle => toggle.getAttribute('aria-expanded') === 'true');
+      const expandAll = byId('expand-all');
+      if (expandAll) expandAll.textContent = allExpanded ? 'Collapse all' : 'Expand all';
+    } else if (target.id === 'expand-all') {
+      allExpanded = !allExpanded;
+      content.querySelectorAll<HTMLElement>('.disclosure-toggle').forEach(toggle => setDisclosure(toggle, allExpanded));
+      target.textContent = allExpanded ? 'Collapse all' : 'Expand all';
+    } else if (target.classList.contains('copy-issue')) {
+      const issue = visibleIssues[Number(target.dataset.issueIndex)];
+      if (issue) void copyText(formatIssueText(issue), 'Copied issue');
+    }
+  });
+  content.addEventListener('change', event => {
+    const select = event.target as HTMLSelectElement;
+    if (select.id !== 'issues-sort') return;
+    sortMode = select.value === 'type' ? 'type' : 'severity';
+    renderIssueList();
+    byId('issues-sort')?.focus();
+  });
+}
+
+// ============================================================================
+// Notes and JSON tabs
+// ============================================================================
+
 function renderNotesTab(analysis: ScreenshotAnalysis) {
-  const content = document.getElementById('content-notes') as HTMLDivElement;
-  const notes = analysis.uxCritique || [];
-  
-  if (notes.length === 0) {
-    content.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon">📝</div>
-        <div class="empty-state-title">No notes available</div>
-        <div class="empty-state-text">Notes will appear here after analysis</div>
-      </div>
-    `;
+  const content = byId('content-notes');
+  const notes = (analysis.uxCritique ?? []).map(normalizeNote).filter(note => note.issue.trim());
+  setBadge('badge-notes', notes.length);
+  if (!content) return;
+  if (!notes.length) {
+    content.innerHTML = emptyState('sticky-note', 'No suggestions', 'The model had no suggestions for this capture.');
     return;
   }
-  
-  // Update badge
-  const badge = document.getElementById('badge-notes');
-  if (badge) badge.textContent = String(notes.length);
-  
-  let html = '';
-  notes.forEach((item: any) => {
-    if (typeof item === 'object' && item !== null) {
-      const area = item.area || item.category || '';
-      let issue = item.issue || item.problem || item.text || item.message || item.note || item.comment || '';
-      
-      // If no issue text found, try to extract from object properties
-      if (!issue) {
-        const textFields = ['description', 'summary', 'content', 'title', 'name', 'label'];
-        for (const field of textFields) {
-          if (item[field] && typeof item[field] === 'string') {
-            issue = item[field];
-            break;
-          }
-        }
-        
-        // If still nothing, try to stringify meaningful properties
-        if (!issue) {
-        const entries = Object.entries(item).filter(([k, v]) =>
-            k !== 'area' && k !== 'category' && k !== 'suggestion' && k !== 'recommendation' &&
-            v !== null && v !== undefined && typeof v === 'string' && v.length > 0
-          );
-          if (entries.length > 0) {
-            issue = entries.map(([k, v]) => `${k}: ${v}`).join(', ');
-          } else {
-            issue = 'Note';
-          }
-        }
-      }
-      
-      const suggestion = item.suggestion || item.recommendation || '';
-      
-      html += `
-        <div class="section">
-          ${area ? `<h3>${escapeHtml(area)}</h3>` : ''}
-          <p>${escapeHtml(issue)}</p>
-          ${suggestion ? `<div style="background: #e8f5e9; padding: 12px; border-radius: 6px; margin-top: 8px; border-left: 4px solid #4caf50;"><strong>💡 Suggestion:</strong> ${escapeHtml(suggestion)}</div>` : ''}
-        </div>
-      `;
-    } else {
-      html += `<div class="section"><p>${escapeHtml(String(item))}</p></div>`;
-    }
-  });
-  
-  content.innerHTML = html;
+  content.innerHTML = notes.map(note => '<article class="note">'
+    + (note.area ? `<h3 class="note-area">${escapeHtml(note.area)}</h3>` : '')
+    + `<p class="note-issue">${escapeHtml(note.issue)}</p>`
+    + (note.suggestion ? `<p class="note-suggestion"><span class="note-label">Suggestion</span> ${escapeHtml(note.suggestion)}</p>` : '')
+    + '</article>').join('');
 }
 
-// Render raw/JSON tab
 function renderRawTab(response: AIResponse<ScreenshotAnalysis>) {
-  const content = document.getElementById('content-raw') as HTMLDivElement;
-  
-  const jsonStr = JSON.stringify(response, null, 2);
-  sectionCopyData.set('raw', jsonStr);
-  
-  content.innerHTML = `
-    <div class="section">
-      <div class="section-header">
-        <h3>Raw JSON Response</h3>
-        <div class="section-actions">
-          <button class="copy-section" data-copy-id="raw">Copy JSON</button>
-          <button class="copy-section" data-export-id="raw">Export JSON</button>
-        </div>
-      </div>
-      <pre style="background: #f5f5f5; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 12px; line-height: 1.5;">${escapeHtml(jsonStr)}</pre>
-    </div>
-  `;
-  
-  // Wire copy button
-  const copyBtn = content.querySelector('[data-copy-id="raw"]');
-  if (copyBtn) {
-    copyBtn.addEventListener('click', () => {
-      navigator.clipboard.writeText(jsonStr).then(() => {
-        showToast('Copied JSON to clipboard', 'success');
-      }).catch(err => {
-        console.error('Failed to copy:', err);
-        showToast('Failed to copy to clipboard', 'error');
-      });
-    });
-  }
-
-  const exportBtn = content.querySelector('[data-export-id="raw"]');
-  if (exportBtn) {
-    exportBtn.addEventListener('click', async () => {
-      await exportJSONFile();
-    });
-  }
+  const content = byId('content-raw');
+  if (!content) return;
+  // Copy and save live in the Export menu; the tab is a read-only view of the full response.
+  content.innerHTML = `<pre class="code-block raw-json"><code>${escapeHtml(JSON.stringify(response, null, 2))}</code></pre>`;
 }
 
-// Render logs tab (placeholder)
-function renderLogsTab() {
-  const content = document.getElementById('content-logs') as HTMLDivElement;
-  content.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-state-icon">📜</div>
-      <div class="empty-state-title">Logs</div>
-      <div class="empty-state-text">
-        <button id="open-logs-btn" class="status-btn primary" style="margin-top: 16px;">Open Logs Folder</button>
-      </div>
-    </div>
-  `;
-  
-  const openLogsBtn = content.querySelector('#open-logs-btn');
-  if (openLogsBtn) {
-    openLogsBtn.addEventListener('click', async () => {
-      try {
-        const result = await api.settings.openLogsFolder();
-        if (result?.success) {
-          showToast('Opened logs folder', 'success');
-        } else {
-          showToast(result?.error || 'Failed to open logs folder', 'error');
-        }
-      } catch (error) {
-        console.error('Failed to open logs folder:', error);
-        showToast('Failed to open logs folder', 'error');
-      }
-    });
-  }
+// ============================================================================
+// Export menu (APG menu button)
+// ============================================================================
+
+const menuItems = () => Array.from(exportMenu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+const isExportMenuOpen = () => !!exportMenu && !exportMenu.hidden;
+
+function openExportMenu(focusLast = false) {
+  if (!exportMenu || exportBtn.disabled) return;
+  exportMenu.hidden = false;
+  exportBtn.setAttribute('aria-expanded', 'true');
+  const items = menuItems();
+  items[focusLast ? items.length - 1 : 0]?.focus();
 }
 
-// Export menu handlers
+function closeExportMenu(restoreFocus: boolean) {
+  if (!exportMenu || exportMenu.hidden) return;
+  exportMenu.hidden = true;
+  exportBtn.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) exportBtn.focus();
+}
+
 function setupExportMenu() {
-  const exportBtn = document.getElementById('export-btn') as HTMLButtonElement | null;
-  const exportDropdown = document.getElementById('export-menu-dropdown');
-  
-  if (!exportBtn || !exportDropdown) return;
-  
-  // Toggle dropdown
-  exportBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (exportBtn.disabled) return;
-    exportDropdown.classList.toggle('show');
-  });
-  
-  // Close dropdown when clicking outside
-  document.addEventListener('click', () => {
-    exportDropdown.classList.remove('show');
-  });
-  
-  // Handle export menu items
-  const exportItems = exportDropdown.querySelectorAll('.export-menu-item');
-  exportItems.forEach(item => {
-    item.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const exportType = item.getAttribute('data-export');
-      if (exportType) {
-        await handleExport(exportType);
-        exportDropdown.classList.remove('show');
-      }
-    });
-  });
-}
-
-async function handleExport(exportType: string) {
-  if (!lastResult || !lastResult.success || !lastResult.data) {
-    showToast('No data to export', 'error');
-    return;
-  }
-  
-  const analysis = lastResult.data;
-  
-  try {
-    switch (exportType) {
-      case 'report-markdown':
-        await copyReportMarkdown(analysis);
-        break;
-      case 'summary':
-        await copySummary(analysis);
-        break;
-      case 'issues':
-        await copyIssues(analysis);
-        break;
-      case 'json':
-        await copyJSON();
-        break;
-      case 'export-json':
-        await exportJSONFile();
-        break;
-      case 'export-markdown':
-        await exportMarkdownFile(analysis);
-        break;
+  if (!exportMenu) return;
+  menuItems().forEach(item => { item.tabIndex = -1; });
+  exportBtn.addEventListener('click', () => (isExportMenuOpen() ? closeExportMenu(true) : openExportMenu()));
+  exportBtn.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      openExportMenu(event.key === 'ArrowUp');
     }
-  } catch (err) {
-    console.error('Export failed:', err);
-    showToast('Export failed', 'error');
-  }
-}
-
-async function copyReportMarkdown(analysis: ScreenshotAnalysis) {
-  let markdown = '# Screenshot Analysis Report\n\n';
-  
-  if (analysis.summary) {
-    markdown += `## Summary\n\n${analysis.summary}\n\n`;
-  }
-  
-  if (analysis.issues && analysis.issues.length > 0) {
-    markdown += `## Issues (${analysis.issues.length})\n\n`;
-    analysis.issues.forEach((issue: any, index: number) => {
-      const severity = issue.severity || 'medium';
-      const text = issue.risk || issue.text || issue.message || issue.issue || String(issue);
-      markdown += `### ${index + 1}. [${severity.toUpperCase()}] ${text}\n\n`;
-      if (issue.details) markdown += `${issue.details}\n\n`;
-      if (issue.suggestion) markdown += `**Suggested Fix:** ${issue.suggestion}\n\n`;
-    });
-  }
-  
-  if (analysis.uxCritique && analysis.uxCritique.length > 0) {
-    markdown += `## Notes (${analysis.uxCritique.length})\n\n`;
-    analysis.uxCritique.forEach((item: any) => {
-      if (typeof item === 'object') {
-        const area = item.area || item.category || '';
-        const issue = item.issue || item.problem || '';
-        const suggestion = item.suggestion || item.recommendation || '';
-        markdown += `### ${area}\n\n${issue}\n\n`;
-        if (suggestion) markdown += `**Suggestion:** ${suggestion}\n\n`;
-      } else {
-        markdown += `- ${item}\n\n`;
-      }
-    });
-  }
-  
-  await navigator.clipboard.writeText(markdown);
-  showToast(`Copied report (${analysis.issues?.length || 0} issues) as Markdown`, 'success');
-}
-
-async function copySummary(analysis: ScreenshotAnalysis) {
-  const summary = analysis.summary || analysis.answer || 'No summary available';
-  await navigator.clipboard.writeText(String(summary));
-  showToast('Copied summary', 'success');
-}
-
-async function copyIssues(analysis: ScreenshotAnalysis) {
-  if (!analysis.issues || analysis.issues.length === 0) {
-    showToast('No issues to copy', 'info');
-    return;
-  }
-  
-  let markdown = `Issues (${analysis.issues.length}):\n\n`;
-  analysis.issues.forEach((issue: any, index: number) => {
-    const severity = issue.severity || 'medium';
-    const issueText = issue.risk || issue.text || issue.message || issue.issue || String(issue);
-    markdown += `${index + 1}. [${severity.toUpperCase()}] ${issueText}\n`;
-    if (issue.details) markdown += `   ${issue.details}\n`;
-    if (issue.suggestion) markdown += `   Suggested Fix: ${issue.suggestion}\n`;
-    markdown += '\n';
   });
-  
-  await navigator.clipboard.writeText(markdown);
-  showToast(`Copied ${analysis.issues.length} issue(s)`, 'success');
+  exportMenu.addEventListener('keydown', event => {
+    const items = menuItems();
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    const next = ({
+      ArrowDown: (index + 1) % items.length,
+      ArrowUp: (index - 1 + items.length) % items.length,
+      Home: 0,
+      End: items.length - 1,
+    } as Record<string, number>)[event.key];
+    if (next !== undefined) {
+      event.preventDefault();
+      items[next]?.focus();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeExportMenu(true);
+    } else if (event.key === 'Tab') {
+      closeExportMenu(false);
+    }
+  });
+  exportMenu.addEventListener('click', event => {
+    const item = (event.target as HTMLElement).closest<HTMLElement>('[data-export]');
+    if (!item) return;
+    closeExportMenu(true);
+    void handleExport(item.dataset.export ?? '');
+  });
+  document.addEventListener('click', event => {
+    const target = event.target as Node;
+    if (isExportMenuOpen() && !exportMenu!.contains(target) && !exportBtn.contains(target)) closeExportMenu(false);
+  });
 }
 
-async function copyJSON() {
-  const jsonStr = JSON.stringify(lastResult, null, 2);
-  await navigator.clipboard.writeText(jsonStr);
-  showToast('Copied JSON', 'success');
-}
-
-function getExportTimestamp(): string {
+function exportTimestamp(): string {
   const date = new Date();
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
 }
 
-async function exportJSONFile() {
-  if (!lastResult) {
-    showToast('No JSON to export', 'error');
-    return;
-  }
-
-  const jsonStr = JSON.stringify(lastResult, null, 2);
-
+async function saveFile(content: string, extension: 'json' | 'md', label: string) {
   try {
     const result = await api.files.saveTextFile({
-      content: jsonStr,
-      defaultFileName: `screenshot-analysis-${getExportTimestamp()}.json`,
-      filters: [
-        { name: 'JSON Files', extensions: ['json'] },
-      ],
+      content,
+      defaultFileName: `screenshot-analysis-${exportTimestamp()}.${extension}`,
+      filters: [{ name: extension === 'json' ? 'JSON files' : 'Markdown files', extensions: [extension] }],
     });
-
-    if (result?.success) {
-      showToast('Exported JSON file', 'success');
-      return;
-    }
-
-    if (result?.cancelled) {
-      showToast('Export cancelled', 'info');
-      return;
-    }
-
-    showToast(result?.error || 'Failed to export JSON file', 'error');
+    if (result?.success) showToast(`Saved ${label} file`);
+    else if (result?.cancelled) showToast('Save cancelled');
+    else showToast(result?.error || `Couldn't save the ${label} file`);
   } catch (error) {
-    console.error('Failed to export JSON file:', error);
-    showToast('Failed to export JSON file', 'error');
+    console.error(`Failed to save ${label} file:`, error);
+    showToast(`Couldn't save the ${label} file`);
   }
 }
 
-async function exportMarkdownFile(analysis: ScreenshotAnalysis) {
-  // TODO: Use Electron's dialog to save file
-  // For now, just copy to clipboard
-  await copyReportMarkdown(analysis);
-  showToast('File export coming soon. Report copied to clipboard.', 'info');
+async function handleExport(kind: string) {
+  if (!lastResult?.success || !lastResult.data) {
+    showToast('Nothing to export yet');
+    return;
+  }
+  const json = JSON.stringify(lastResult, null, 2);
+  switch (kind) {
+    case 'report-markdown': return copyText(buildReportMarkdown(lastResult), 'Copied report as Markdown');
+    case 'json': return copyText(json, 'Copied JSON');
+    case 'export-markdown': return saveFile(buildReportMarkdown(lastResult), 'md', 'Markdown');
+    case 'export-json': return saveFile(json, 'json', 'JSON');
+  }
 }
 
-// Setup event listeners
-function setupEventListeners() {
-  // Set up API event listeners
-  api.analysis.onProcessing((payload: { stage: string; screenshotDataUrl?: string }) => {
-    if (payload.stage === 'cancelled') {
-      updateStatus('idle');
-      updateScreenshotPreview(null);
-      switchTab('issues');
-      feedbackSubmitted = null;
-      return;
-    }
-    
-    if (payload.stage === 'capture') {
-      updateStatus('capturing');
-    } else if (payload.stage === 'analyzing') {
-      updateStatus('analyzing');
-      // Update screenshot preview if provided
-      if (payload.screenshotDataUrl) {
-        updateScreenshotPreview(payload.screenshotDataUrl);
-      }
-    }
-    
-    // Clear tabs
-    tabContents.forEach(content => {
-      if (!content.hidden) {
-        content.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div><div class="empty-state-title">Processing...</div></div>';
-      }
-    });
-    
-    feedbackSubmitted = null;
-  });
+// ============================================================================
+// Feedback
+// ============================================================================
 
-  // Listen for screenshot events
-  api.analysis.onScreenshot((payload: { dataUrl: string }) => {
-    updateScreenshotPreview(payload.dataUrl);
-  });
+const feedbackChips = () => Array.from(feedbackPopover?.querySelectorAll<HTMLButtonElement>('[data-feedback-reason]') ?? []);
+const selectedReason = () => feedbackChips().find(chip => chip.getAttribute('aria-pressed') === 'true')?.dataset.feedbackReason as FeedbackReason | undefined;
 
-  api.analysis.onResult((response: AIResponse<ScreenshotAnalysis>) => {
+function updateFeedbackSubmit() {
+  if (feedbackSubmitBtn) feedbackSubmitBtn.disabled = !selectedReason() && !feedbackOther?.value.trim();
+}
 
-    
-    lastResult = response;
+function resetFeedbackForm() {
+  feedbackChips().forEach(chip => chip.setAttribute('aria-pressed', 'false'));
+  if (feedbackOther) feedbackOther.value = '';
+  updateFeedbackSubmit();
+}
 
-    if (response.success && response.data) {
-      const analysis = response.data;
-      const confidence = analysis.confidence || 0;
-      
-      updateStatus('success', `Analysis complete`);
-      updateConfidence(confidence);
-      
-      // Update screenshot preview if we have it
-      // Note: Screenshot data URL should be stored during capture process
-      // For now, we'll use a placeholder - this should be connected to the capture API
-      
-      // Update metadata
-      updateScreenshotMetadata(response.metadata);
-      
-      // Render tabs
-      renderIssuesTab(analysis);
-      renderSummaryTab(analysis);
-      renderNotesTab(analysis);
-      renderRawTab(response);
-      renderLogsTab();
-      
-      // Switch to appropriate tab
-      if (analysis.issues && analysis.issues.length > 0) {
-        switchTab('issues');
-      } else {
-        switchTab('summary');
-      }
-      
-      // Reset feedback UI
-      feedbackPositiveBtn.classList.remove('active', 'positive');
-      feedbackNegativeBtn.classList.remove('active', 'negative');
-      feedbackSubmitted = null;
-    } else {
-      updateStatus('error', 'Analysis failed');
-      switchTab('issues');
-      const content = document.getElementById('content-issues') as HTMLDivElement;
-      content.innerHTML = `<div class="section"><p style="color: #c62828;">Error: ${escapeHtml(response.error?.message || "Unknown error")}</p></div>`;
-    }
-  });
+function resetFeedback() {
+  feedbackSubmitted = null;
+  feedbackPositiveBtn?.setAttribute('aria-pressed', 'false');
+  feedbackNegativeBtn?.setAttribute('aria-pressed', 'false');
+  if (feedbackPositiveBtn) feedbackPositiveBtn.disabled = false;
+  if (feedbackNegativeBtn) feedbackNegativeBtn.disabled = false;
+  closeFeedbackPopover(false);
+  resetFeedbackForm();
+}
 
-  api.analysis.onError((payload: { code: string; message: string; retryable: boolean; metadata?: unknown }) => {
-    updateStatus('error', `Error: ${payload.code}`);
-    switchTab('issues');
-    const content = document.getElementById('content-issues') as HTMLDivElement;
-    content.innerHTML = `<div class="section"><p style="color: #c62828;">${escapeHtml(payload.message)}</p></div>`;
-  });
+function openFeedbackPopover() {
+  if (!feedbackPopover) return;
+  popoverReturnFocus = feedbackNegativeBtn;
+  feedbackPopover.hidden = false;
+  (feedbackChips()[0] ?? feedbackOther)?.focus();
+}
 
-  // Capture button
-  captureBtn.addEventListener("click", () => {
-    console.log('Capture button clicked');
-    try {
-      if (api && api.capture && api.capture.start) {
-        api.capture.start();
-      } else {
-        console.error('Capture API not available:', { api, capture: api?.capture });
-        showToast('Capture feature not available. Please restart the application.', 'error');
-      }
-    } catch (error) {
-      console.error('Error starting capture:', error);
-      showToast('Failed to start capture', 'error');
-    }
-  });
+function closeFeedbackPopover(restoreFocus: boolean) {
+  if (!feedbackPopover || feedbackPopover.hidden) return;
+  feedbackPopover.hidden = true;
+  if (restoreFocus) popoverReturnFocus?.focus();
+}
 
-  // Run again button
-  runAgainBtn.addEventListener("click", () => {
-    api.analysis.retry();
-  });
+async function sendFeedback(positive: boolean, details?: FeedbackDetails) {
+  if (api.feedback?.submit) await api.feedback.submit(positive, details);
+  else await api.analysis.submitFeedback?.(positive);
+}
 
-  // Export menu is set up in setupExportMenu()
+function markFeedback(kind: 'positive' | 'negative') {
+  feedbackSubmitted = kind;
+  feedbackPositiveBtn?.setAttribute('aria-pressed', String(kind === 'positive'));
+  feedbackNegativeBtn?.setAttribute('aria-pressed', String(kind === 'negative'));
+}
 
-  // Feedback buttons
-  feedbackPositiveBtn.addEventListener("click", async () => {
+function setupFeedback() {
+  feedbackPositiveBtn?.addEventListener('click', async () => {
     if (!lastResult || feedbackSubmitted === 'positive') return;
-    
+    closeFeedbackPopover(false);
     try {
-      feedbackPositiveBtn.disabled = true;
-      feedbackNegativeBtn.disabled = true;
-      
-      await api.analysis.submitFeedback(true);
-      feedbackSubmitted = 'positive';
-      feedbackPositiveBtn.classList.add('active', 'positive');
-      feedbackNegativeBtn.classList.remove('active', 'negative');
-      
-      showToast('Thank you for your feedback!', 'success');
-    } catch (err) {
-      console.error("Failed to submit feedback:", err);
-      feedbackPositiveBtn.disabled = false;
-      feedbackNegativeBtn.disabled = false;
+      await sendFeedback(true);
+      markFeedback('positive');
+      showToast('Rating saved on this device');
+    } catch (error) {
+      console.error('Failed to submit feedback:', error);
+      showToast("Couldn't save the rating");
     }
   });
-
-  feedbackNegativeBtn.addEventListener("click", async () => {
-    if (!lastResult || feedbackSubmitted === 'negative') return;
-    
-    // Show feedback popover with proper positioning
-    const popover = document.getElementById('feedback-popover');
-    if (popover) {
-      // Calculate position relative to the feedback button
-      const buttonRect = feedbackNegativeBtn.getBoundingClientRect();
-      const popoverHeight = 400; // max-height from CSS
-      const spaceAbove = buttonRect.top;
-      const spaceBelow = window.innerHeight - buttonRect.bottom;
-      
-      // Position horizontally
-      popover.style.right = `${window.innerWidth - buttonRect.right}px`;
-      
-      // Position vertically - prefer above, but flip below if not enough space
-      if (spaceAbove >= popoverHeight || spaceAbove > spaceBelow) {
-        // Position above button
-        popover.style.bottom = `${window.innerHeight - buttonRect.top + 8}px`;
-        popover.style.top = 'auto';
-      } else {
-        // Position below button
-        popover.style.top = `${buttonRect.bottom + 8}px`;
-        popover.style.bottom = 'auto';
-      }
-      
-      popover.classList.add('show');
-    }
+  feedbackNegativeBtn?.addEventListener('click', () => {
+    if (!lastResult) return;
+    if (feedbackPopover?.hidden === false) closeFeedbackPopover(true);
+    else openFeedbackPopover();
   });
-  
-  // Setup feedback popover
-  setupFeedbackPopover();
-}
-
-// Setup feedback popover
-function setupFeedbackPopover() {
-  const popover = document.getElementById('feedback-popover');
-  const submitBtn = document.getElementById('feedback-submit') as HTMLButtonElement | null;
-  const otherTextarea = document.getElementById('feedback-other') as HTMLTextAreaElement;
-  const options = popover?.querySelectorAll('.feedback-option');
-  let selectedReason: string | null = null;
-  
-  if (!popover || !submitBtn) return;
-  
-  // Handle option clicks
-  options?.forEach(option => {
-    option.addEventListener('click', () => {
-      selectedReason = option.getAttribute('data-feedback-reason');
-      options.forEach(opt => opt.classList.remove('active'));
-      option.classList.add('active');
-    });
+  feedbackChips().forEach(chip => chip.addEventListener('click', () => {
+    const pressed = chip.getAttribute('aria-pressed') === 'true';
+    feedbackChips().forEach(other => other.setAttribute('aria-pressed', 'false'));
+    chip.setAttribute('aria-pressed', String(!pressed));
+    updateFeedbackSubmit();
+  }));
+  feedbackOther?.addEventListener('input', updateFeedbackSubmit);
+  byId('feedback-cancel')?.addEventListener('click', () => closeFeedbackPopover(true));
+  feedbackPopover?.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeFeedbackPopover(true);
   });
-  
-  // Submit feedback
-  submitBtn.addEventListener('click', async () => {
-    if (!lastResult || !selectedReason) {
-      showToast('Please select a reason', 'error');
-      return;
-    }
-    
+  feedbackSubmitBtn?.addEventListener('click', async () => {
+    const reason = selectedReason();
+    const comment = feedbackOther?.value.trim().slice(0, 500) ?? '';
+    if (!lastResult || (!reason && !comment) || !feedbackSubmitBtn) return;
+    const details: FeedbackDetails = {};
+    if (reason) details.reason = reason;
+    if (comment) details.comment = comment;
+    feedbackSubmitBtn.disabled = true;
     try {
-      feedbackPositiveBtn.disabled = true;
-      feedbackNegativeBtn.disabled = true;
-      submitBtn.disabled = true;
-      
-      // TODO: Send structured feedback to API
-      await api.analysis.submitFeedback(false);
-      
-      feedbackSubmitted = 'negative';
-      feedbackNegativeBtn.classList.add('active', 'negative');
-      feedbackPositiveBtn.classList.remove('active', 'positive');
-      popover.classList.remove('show');
-      
-      showToast('Thank you for your feedback!', 'success');
-      
-      // Reset popover
-      selectedReason = null;
-      options?.forEach(opt => opt.classList.remove('active'));
-      if (otherTextarea) otherTextarea.value = '';
-      
-      feedbackPositiveBtn.disabled = false;
-      feedbackNegativeBtn.disabled = false;
-      submitBtn.disabled = false;
-    } catch (err) {
-      console.error("Failed to submit feedback:", err);
-      showToast('Failed to submit feedback', 'error');
-      feedbackPositiveBtn.disabled = false;
-      feedbackNegativeBtn.disabled = false;
-      submitBtn.disabled = false;
+      await sendFeedback(false, details);
+      markFeedback('negative');
+      closeFeedbackPopover(true);
+      resetFeedbackForm();
+      showToast('Feedback saved. Run again to use it.');
+    } catch (error) {
+      console.error('Failed to submit feedback:', error);
+      showToast("Couldn't save the feedback");
+      updateFeedbackSubmit();
     }
   });
-  
-  // Close popover when clicking outside
-  document.addEventListener('click', (e) => {
-    if (popover && !popover.contains(e.target as Node) && 
-        e.target !== feedbackNegativeBtn && 
-        !feedbackNegativeBtn.contains(e.target as Node)) {
-      popover.classList.remove('show');
-    }
-  });
-  
-  // Reposition popover on window resize
-  window.addEventListener('resize', () => {
-    if (popover && popover.classList.contains('show')) {
-      const buttonRect = feedbackNegativeBtn.getBoundingClientRect();
-      const popoverHeight = 400;
-      const spaceAbove = buttonRect.top;
-      const spaceBelow = window.innerHeight - buttonRect.bottom;
-      
-      popover.style.right = `${window.innerWidth - buttonRect.right}px`;
-      
-      if (spaceAbove >= popoverHeight || spaceAbove > spaceBelow) {
-        popover.style.bottom = `${window.innerHeight - buttonRect.top + 8}px`;
-        popover.style.top = 'auto';
-      } else {
-        popover.style.top = `${buttonRect.bottom + 8}px`;
-        popover.style.bottom = 'auto';
-      }
+  document.addEventListener('click', event => {
+    const target = event.target as Node;
+    if (feedbackPopover && !feedbackPopover.hidden && !feedbackPopover.contains(target) && !feedbackNegativeBtn?.contains(target)) {
+      closeFeedbackPopover(false);
     }
   });
 }
 
-// Screenshot viewer state
+// ============================================================================
+// Screenshot viewer
+// ============================================================================
+
 let viewerZoom = 1;
 let viewerPanX = 0;
 let viewerPanY = 0;
-let viewerIsDragging = false;
-let viewerDragStartX = 0;
-let viewerDragStartY = 0;
-let viewerDragStartPanX = 0;
-let viewerDragStartPanY = 0;
-let highlightedRegions: Array<{ x: number; y: number; width: number; height: number }> = [];
+let viewerDrag: { x: number; y: number; panX: number; panY: number } | null = null;
 
-// Open screenshot viewer
-function openScreenshotViewer(dataUrl: string) {
-  if (!screenshotViewer || !viewerImage) return;
-  
-  viewerImage.src = dataUrl;
-  viewerZoom = 1;
-  viewerPanX = 0;
-  viewerPanY = 0;
-  highlightedRegions = [];
-  
-  screenshotViewer.hidden = false;
-  viewerImage.onload = () => {
-    updateViewerTransform();
-    drawRegions();
-  };
-  
-  // Focus the close button for accessibility
-  viewerCloseBtn.focus();
-  
-  // Trap focus within modal
-  trapFocus(screenshotViewer);
-}
-
-// Close screenshot viewer
-function closeScreenshotViewer() {
-  if (!screenshotViewer) return;
-  screenshotViewer.hidden = true;
-  viewerZoom = 1;
-  viewerPanX = 0;
-  viewerPanY = 0;
-  highlightedRegions = [];
-  updateViewerTransform();
-}
-
-// Update viewer zoom and pan transform
 function updateViewerTransform() {
-  if (!viewerImage || !viewerContent) return;
-  
-  const scale = viewerZoom;
-  const translateX = viewerPanX;
-  const translateY = viewerPanY;
-  
-  viewerImage.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
-  viewerZoomLevel.textContent = `${Math.round(scale * 100)}%`;
-  
-  // Update canvas for regions
-  if (viewerRegionsCanvas && viewerImage.complete) {
-    drawRegions();
-  }
+  if (!viewerImage) return;
+  // CSSOM property (not markup): pan and zoom are continuous values.
+  viewerImage.style.transform = `translate(${viewerPanX}px, ${viewerPanY}px) scale(${viewerZoom})`;
+  if (viewerZoomLevel) viewerZoomLevel.textContent = `${Math.round(viewerZoom * 100)}%`;
 }
 
-// Draw highlighted regions on canvas
-function drawRegions() {
-  if (!viewerRegionsCanvas || !viewerImage || highlightedRegions.length === 0) {
-    viewerRegionsCanvas.width = 0;
-    viewerRegionsCanvas.height = 0;
-    return;
-  }
-  
-  const rect = viewerContent.getBoundingClientRect();
-  const imgRect = viewerImage.getBoundingClientRect();
-  
-  viewerRegionsCanvas.width = rect.width;
-  viewerRegionsCanvas.height = rect.height;
-  
-  const ctx = viewerRegionsCanvas.getContext('2d');
-  if (!ctx) return;
-  
-  ctx.clearRect(0, 0, rect.width, rect.height);
-  
-  // Calculate scale and offset
-  const scaleX = imgRect.width / viewerImage.naturalWidth;
-  const scaleY = imgRect.height / viewerImage.naturalHeight;
-  const offsetX = (rect.width - imgRect.width) / 2 + imgRect.left - rect.left;
-  const offsetY = (rect.height - imgRect.height) / 2 + imgRect.top - rect.top;
-  
-  highlightedRegions.forEach(region => {
-    const x = offsetX + (region.x * scaleX);
-    const y = offsetY + (region.y * scaleY);
-    const width = region.width * scaleX;
-    const height = region.height * scaleY;
-    
-    // Draw highlight rectangle
-    ctx.strokeStyle = '#1976d2';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.strokeRect(x, y, width, height);
-    
-    // Draw semi-transparent fill
-    ctx.fillStyle = 'rgba(25, 118, 210, 0.1)';
-    ctx.fillRect(x, y, width, height);
-  });
-}
-
-// Zoom in
-function zoomIn() {
-  viewerZoom = Math.min(viewerZoom * 1.2, 5);
+function setZoom(zoom: number) {
+  viewerZoom = Math.max(0.5, Math.min(5, zoom));
   updateViewerTransform();
 }
 
-// Zoom out
-function zoomOut() {
-  viewerZoom = Math.max(viewerZoom / 1.2, 0.5);
-  updateViewerTransform();
-}
-
-// Reset zoom and pan
 function resetViewer() {
   viewerZoom = 1;
   viewerPanX = 0;
@@ -1595,200 +1106,198 @@ function resetViewer() {
   updateViewerTransform();
 }
 
-// Setup screenshot viewer
+function openScreenshotViewer() {
+  if (!screenshotViewer || !viewerImage || !currentScreenshot) return;
+  viewerReturnFocus = document.activeElement as HTMLElement | null;
+  viewerImage.src = currentScreenshot;
+  resetViewer();
+  screenshotViewer.hidden = false;
+  byId('viewer-close')?.focus();
+}
+
+function closeScreenshotViewer() {
+  if (!screenshotViewer || screenshotViewer.hidden) return;
+  screenshotViewer.hidden = true;
+  resetViewer();
+  (viewerReturnFocus?.isConnected ? viewerReturnFocus : screenshotPreview)?.focus();
+  viewerReturnFocus = null;
+}
+
 function setupScreenshotViewer() {
-  if (!screenshotViewer || !viewerImage || !viewerContent) return;
-  
-  // Zoom controls
-  viewerZoomInBtn.addEventListener('click', zoomIn);
-  viewerZoomOutBtn.addEventListener('click', zoomOut);
-  viewerResetBtn.addEventListener('click', resetViewer);
-  viewerCloseBtn.addEventListener('click', closeScreenshotViewer);
-  
-  // Mouse wheel zoom
-  viewerContent.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    viewerZoom = Math.max(0.5, Math.min(5, viewerZoom * delta));
-    updateViewerTransform();
+  screenshotPreview?.addEventListener('click', openScreenshotViewer);
+  if (!screenshotViewer || !viewerContent) return;
+  byId('viewer-zoom-in')?.addEventListener('click', () => setZoom(viewerZoom * 1.2));
+  byId('viewer-zoom-out')?.addEventListener('click', () => setZoom(viewerZoom / 1.2));
+  byId('viewer-reset')?.addEventListener('click', resetViewer);
+  byId('viewer-close')?.addEventListener('click', closeScreenshotViewer);
+  screenshotViewer.querySelector('.screenshot-viewer-overlay')?.addEventListener('click', closeScreenshotViewer);
+
+  viewerContent.addEventListener('wheel', event => {
+    event.preventDefault();
+    setZoom(viewerZoom * (event.deltaY > 0 ? 0.9 : 1.1));
   }, { passive: false });
-  
-  // Pan with mouse drag
-  viewerContent.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return; // Only left mouse button
-    viewerIsDragging = true;
-    viewerDragStartX = e.clientX;
-    viewerDragStartY = e.clientY;
-    viewerDragStartPanX = viewerPanX;
-    viewerDragStartPanY = viewerPanY;
-    viewerContent.classList.add('dragging');
+  viewerContent.addEventListener('mousedown', event => {
+    if (event.button !== 0) return;
+    viewerDrag = { x: event.clientX, y: event.clientY, panX: viewerPanX, panY: viewerPanY };
+    viewerContent!.classList.add('dragging');
   });
-  
-  document.addEventListener('mousemove', (e) => {
-    if (!viewerIsDragging) return;
-    const deltaX = e.clientX - viewerDragStartX;
-    const deltaY = e.clientY - viewerDragStartY;
-    viewerPanX = viewerDragStartPanX + deltaX;
-    viewerPanY = viewerDragStartPanY + deltaY;
+  document.addEventListener('mousemove', event => {
+    if (!viewerDrag) return;
+    viewerPanX = viewerDrag.panX + event.clientX - viewerDrag.x;
+    viewerPanY = viewerDrag.panY + event.clientY - viewerDrag.y;
     updateViewerTransform();
   });
-  
   document.addEventListener('mouseup', () => {
-    if (viewerIsDragging) {
-      viewerIsDragging = false;
-      viewerContent.classList.remove('dragging');
-    }
+    if (!viewerDrag) return;
+    viewerDrag = null;
+    viewerContent!.classList.remove('dragging');
   });
-  
-  // Close on overlay click
-  const overlay = screenshotViewer.querySelector('.screenshot-viewer-overlay');
-  overlay?.addEventListener('click', closeScreenshotViewer);
-  
-  // Prevent closing when clicking on container
-  const container = screenshotViewer.querySelector('.screenshot-viewer-container');
-  container?.addEventListener('click', (e) => {
-    e.stopPropagation();
-  });
-}
 
-// Trap focus within modal
-function trapFocus(modal: HTMLElement) {
-  const focusableElements = modal.querySelectorAll(
-    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-  ) as NodeListOf<HTMLElement>;
-  
-  const firstElement = focusableElements[0];
-  const lastElement = focusableElements[focusableElements.length - 1];
-  
-  modal.addEventListener('keydown', function trapFocusHandler(e: KeyboardEvent) {
-    if (e.key !== 'Tab') return;
-    
-    if (e.shiftKey) {
-      if (document.activeElement === firstElement) {
-        e.preventDefault();
-        lastElement.focus();
-      }
-    } else {
-      if (document.activeElement === lastElement) {
-        e.preventDefault();
-        firstElement.focus();
-      }
+  // Focus trap: registered once; the focusable set is read on every Tab.
+  screenshotViewer.addEventListener('keydown', event => {
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(screenshotViewer!.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'));
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
 }
 
-// Setup keyboard shortcuts
+// ============================================================================
+// Keyboard shortcuts
+// ============================================================================
+
+/**
+ * Shortcuts yield only where letters and digits mean something else: text entry, selects
+ * (type-ahead), and open menus or dialogs. A focused button doesn't use letter keys, so it
+ * doesn't block them.
+ */
+function isShortcutExempt(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    || target.isContentEditable
+    || !!target.closest('[role="menu"], [role="dialog"]');
+}
+
+/** Retry from the keyboard: in the error view this is the panel's own retry action. */
+function retryFromShortcut() {
+  if (phase === 'error') {
+    const retry = byId('error-actions')?.querySelector<HTMLButtonElement>('[data-action="retry"], [data-action="capture"]');
+    if (retry && retry.getAttribute('aria-disabled') !== 'true') retry.click();
+    return;
+  }
+  if (!runAgainBtn.disabled) runAgainBtn.click();
+}
+
+function startCapture() {
+  if (keyMissing) {
+    showMissingKey();
+    return;
+  }
+  try {
+    api.capture.start();
+  } catch (error) {
+    console.error('Error starting capture:', error);
+    showToast("Couldn't start a capture. Restart the app and try again.");
+  }
+}
+
+/** Settings `singleKeyShortcuts` (WCAG 2.1.4). On until the setting reads an explicit false. */
+let singleKeyShortcuts = true;
+
+async function loadShortcutSetting() {
+  try {
+    singleKeyShortcuts = (await api.settings.get('singleKeyShortcuts')) !== false;
+  } catch (error) {
+    console.error('Failed to read shortcut setting:', error);
+  }
+  document.querySelectorAll<HTMLElement>('.welcome-note').forEach(note => { note.hidden = !singleKeyShortcuts; });
+}
+
 function setupKeyboardShortcuts() {
-  document.addEventListener('keydown', (e) => {
-    // Don't trigger shortcuts when typing in inputs/textareas
-    const target = e.target as HTMLElement;
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+  void loadShortcutSetting();
+  window.addEventListener('focus', () => { void loadShortcutSetting(); });
+  document.addEventListener('keydown', event => {
+    if (screenshotViewer && !screenshotViewer.hidden) {
+      const actions: Record<string, () => void> = {
+        Escape: closeScreenshotViewer,
+        '+': () => setZoom(viewerZoom * 1.2),
+        '=': () => setZoom(viewerZoom * 1.2),
+        '-': () => setZoom(viewerZoom / 1.2),
+        '0': resetViewer,
+      };
+      const action = actions[event.key];
+      if (action) {
+        event.preventDefault();
+        action();
+      }
       return;
     }
-    
-    // Handle viewer shortcuts when viewer is open
-    if (!screenshotViewer.hidden) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeScreenshotViewer();
-        return;
-      }
-      if (e.key === '+' || e.key === '=') {
-        e.preventDefault();
-        zoomIn();
-        return;
-      }
-      if (e.key === '-') {
-        e.preventDefault();
-        zoomOut();
-        return;
-      }
-      if (e.key === '0') {
-        e.preventDefault();
-        resetViewer();
-        return;
-      }
-      // Don't process other shortcuts when viewer is open
-      return;
-    }
-    
-    // R - Run again
-    if (e.key === 'r' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      e.preventDefault();
-      if (!runAgainBtn.disabled) {
-        runAgainBtn.click();
-      }
-    }
-    
-    // C - Capture
-    if (e.key === 'c' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      e.preventDefault();
-      if (!captureBtn.disabled) {
-        captureBtn.click();
-      }
-    }
-    
-    // E - Export menu
-    if (e.key === 'e' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      e.preventDefault();
-      if (!exportBtn.disabled) {
-        exportBtn.click();
-      }
-    }
-    
-    // / - Focus filter/search (when on issues tab)
-    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      e.preventDefault();
-      if (activeTab === 'issues') {
-        const firstFilterChip = document.querySelector('.filter-chip') as HTMLElement;
-        if (firstFilterChip) {
-          firstFilterChip.focus();
-        }
-      }
-    }
-    
-    // Escape - Close modals/popovers
-    if (e.key === 'Escape') {
-      const exportDropdown = document.getElementById('export-menu-dropdown');
-      const feedbackPopover = document.getElementById('feedback-popover');
-      if (exportDropdown?.classList.contains('show')) {
-        exportDropdown.classList.remove('show');
-      }
-      if (feedbackPopover?.classList.contains('show')) {
-        feedbackPopover.classList.remove('show');
-      }
-    }
-    
-    // Number keys 1-5 - Switch tabs
-    if (e.key >= '1' && e.key <= '5' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      const tabIndex = parseInt(e.key) - 1;
-      const tabs = ['issues', 'summary', 'notes', 'raw', 'logs'];
-      if (tabs[tabIndex]) {
-        e.preventDefault();
-        switchTab(tabs[tabIndex]);
-        const tabBtn = document.querySelector(`[data-tab="${tabs[tabIndex]}"]`) as HTMLElement;
-        if (tabBtn) tabBtn.focus();
-      }
+    if (!singleKeyShortcuts || event.ctrlKey || event.metaKey || event.altKey || isShortcutExempt(event.target)) return;
+
+    const key = event.key.toLowerCase();
+    if (key === 'c' && !captureBtn.disabled) {
+      event.preventDefault();
+      captureBtn.click();
+    } else if (key === 'r') {
+      event.preventDefault();
+      retryFromShortcut();
+    } else if (key === 'e' && !exportBtn.disabled) {
+      event.preventDefault();
+      openExportMenu();
+    } else if (/^[1-4]$/.test(key) && results && !results.hidden) {
+      event.preventDefault();
+      switchTab(TABS[Number(key) - 1], true);
     }
   });
 }
 
-// Initialize when DOM is ready
+// ============================================================================
+// Wiring
+// ============================================================================
+
+function setupEventListeners() {
+  api.analysis.onProcessing(onProcessing);
+  api.analysis.onScreenshot(payload => receiveScreenshot(payload?.dataUrl ?? ''));
+  api.analysis.onResult(onResult);
+  api.analysis.onError(showError);
+
+  captureBtn.addEventListener('click', startCapture);
+  runAgainBtn.addEventListener('click', () => { if (!retryBlocked()) api.analysis.retry(); });
+  cancelBtn?.addEventListener('click', () => {
+    if (phase !== 'analyzing') return;
+    cancelBtn!.disabled = true;
+    setStatus('working', 'Cancelling…', statusDetail?.textContent ?? '');
+    api.analysis.cancel?.();
+  });
+}
+
 function initialize() {
   if (!initializeElements()) {
     console.error('Failed to initialize elements');
     return;
   }
-  
   setupTabs();
+  setupSummaryTab();
+  setupIssuesTab();
   setupExportMenu();
+  setupFeedback();
   setupScreenshotViewer();
   setupKeyboardShortcuts();
   setupEventListeners();
-  
-  // Initialize UI
-  updateStatus('idle');
-  switchTab('issues');
+
+  setStatus('idle', 'Ready');
+  showView('welcome');
+  switchTab('summary');
+  updateControls();
+  void loadWelcome();
 }
 
 if (document.readyState === 'loading') {

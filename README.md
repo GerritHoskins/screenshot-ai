@@ -6,13 +6,30 @@ Use it to understand an error message, pull text or code from a screenshot, or a
 
 **ScreenshotAI is an early-stage desktop app.** Follow the source setup below to try it. Developers can also use the published [analysis core](#use-the-analysis-core-in-your-own-app) in their own applications.
 
+![ScreenshotAI explaining a captured TypeError, with the suggested fix as a code block](docs/screenshots/analysis-answer.png)
+
 ## What you can do
 
 - Select a screen region with the **Capture** button or a global keyboard shortcut.
 - Read an answer alongside extracted text, code blocks, and structured findings.
+- See which provider and model are analyzing your capture, and cancel a run in progress.
 - Run the analysis again or provide feedback for a revised response.
-- Copy results as text, Markdown, or JSON, or save a JSON file.
+- Copy results as Markdown or JSON, or save them as a Markdown or JSON file.
 - Customize the analysis prompt and optionally include project context from a local folder, GitHub, or GitLab.
+
+| Issues | Suggestions |
+| --- | --- |
+| ![Issues tab listing findings by severity, with one suggested fix expanded](docs/screenshots/analysis-issues.png) | ![Suggestions tab with notes for error messaging and logging](docs/screenshots/analysis-notes.png) |
+
+| First launch | Error recovery |
+| --- | --- |
+| ![Welcome screen explaining how to capture and which provider receives the image](docs/screenshots/welcome.png) | ![A missing API key error with a button that opens API key settings](docs/screenshots/error.png) |
+
+| Providers | API keys | Project context |
+| --- | --- | --- |
+| ![Provider and model selection](docs/screenshots/settings-providers.png) | ![API key settings for OpenAI and Anthropic](docs/screenshots/settings-api-keys.png) | ![Workspace context settings](docs/screenshots/settings-context.png) |
+
+<sub>Screenshots use sample analysis data.</sub>
 
 ## Get started
 
@@ -63,7 +80,6 @@ Review AI-generated answers before relying on them, especially code changes or s
 ## Current limitations
 
 - Windows capture uses a primary-monitor fallback; multiple monitors and different display scaling settings may behave differently.
-- **Export Markdown file** currently copies the report to the clipboard. Use **Copy report (Markdown)** to paste it into your preferred editor, or export JSON to save a file.
 - macOS/Linux screen capture and permissions, desktop installers, and signing have not been fully validated.
 - There is no mobile app yet. The shared core is available for building one; mobile UI, image input, and secure credential storage belong to the host app.
 
@@ -123,7 +139,9 @@ This repository is an npm workspace. The Electron app lives in `apps/desktop`, d
 
 Run package checks sequentially because they rebuild the same core output. The React Native check uses mocked analysis; it does not run on a device or contact a live AI provider.
 
-For local desktop packaging, run `npm run build` followed by `npm run package`. Installer output goes to `release/`; distribution and platform signing still require separate validation.
+For local unsigned desktop packaging, run `npm run build` followed by `npm run package:unsigned -- --win --x64` on Windows x64, or `npm run package:unsigned -- --mac --arm64` on Apple Silicon. Build on the matching OS and architecture so native dependencies are correct. Installer output goes to `release/`; publishing is disabled.
+
+See [desktop release preparation](docs/DESKTOP_RELEASE.md) for all targets, the manual GitHub Actions workflow, signing/notarization credentials, and the installation verification record.
 
 ## License
 

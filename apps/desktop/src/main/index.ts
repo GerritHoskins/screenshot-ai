@@ -8,6 +8,8 @@ import { mapCaptureError, mapProviderError } from "@errors";
 import { registerSettingsHandlers } from "./settings";
 import * as fs from "fs";
 import { hardenWindow, isTrustedIpcSender, validateDesktopIpcArgs, SECURE_WEB_PREFERENCES } from "@security/ipc-hardening";
+import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
+import { initAgentServer, stopAgentServer, McpToolError, AGENT_BUSY_MESSAGE, type AgentBridge } from "./mcp";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +19,10 @@ let mainWindow: BrowserWindow | null = null;
 let lastImage: Buffer | null = null;
 let isProcessing = false;
 let lastFeedback: 'positive' | 'negative' | null = null;
+type FeedbackReason = 'too-verbose' | 'incorrect' | 'missing-context' | 'wrong-format' | 'other';
+let lastFeedbackDetails: { reason?: FeedbackReason; comment?: string } | null = null;
+/** Controller for the in-flight analysis request; null while idle or while selecting a region. */
+let analysisController: AbortController | null = null;
 
 // Initialize logger
 const logger = getLogger({ minLevel: 0 }); // DEBUG level for development
@@ -120,6 +126,122 @@ async function createMainWindow() {
   }
 }
 
+/**
+ * Analyze an image with the current settings. Owns isProcessing/analysisController
+ * for the analysis phase. If the run is cancelled (or superseded), its late result
+ * is discarded: the cancel handler has already reported CANCELLED and reset state.
+ */
+async function runAnalysis(image: Buffer, feedback: 'positive' | 'negative' | null, externalSignal?: AbortSignal): Promise<AIResponse<ScreenshotAnalysis> | null> {
+  const controller = new AbortController();
+  analysisController = controller;
+  // An agent that disconnects cancels its analysis; reset the UI like the Cancel button does.
+  externalSignal?.addEventListener('abort', () => {
+    if (analysisController !== controller) return;
+    [analysisController, isProcessing] = [null, false];
+    controller.abort();
+    mainWindow?.webContents.send("analysis:error", { code: 'CANCELLED', message: 'The agent cancelled the analysis.', retryable: true });
+  }, { once: true });
+  isProcessing = true;
+  const isCurrent = () => analysisController === controller && !controller.signal.aborted;
+
+  try {
+    // Get fresh service instance to pick up any settings changes
+    const settings = loadSettingsFromFile();
+    const currentService = getAnalysisService({
+      provider: settings.provider || 'openai',
+      model: settings.model,
+      workspaceContextEnabled: settings.workspaceContextEnabled === true,
+      workspaceRoot: settings.workspaceRoot,
+    });
+    mainWindow?.webContents.send("analysis:processing", {
+      stage: "analyzing",
+      provider: currentService.providerType,
+      model: currentService.model,
+    });
+
+    const workspaceRoot = getWorkspaceRoot();
+    const response = await currentService.analyzeScreenshot(image, feedback, workspaceRoot, controller.signal);
+
+    if (!isCurrent()) {
+      logger.debug('main', 'Discarding result of cancelled analysis');
+      return null;
+    }
+    analysisController = null;
+    isProcessing = false;
+
+    if (response.success && response.data) {
+      logger.logAIResponse(
+        response.metadata.provider,
+        true,
+        response.metadata.latencyMs,
+        {
+          prompt: response.metadata.promptTokens,
+          completion: response.metadata.completionTokens,
+        }
+      );
+      if (feedback) {
+        logger.info('main', 'Retry successful', { feedback, confidence: response.data.confidence });
+        // Reset feedback after successful retry (user can provide new feedback)
+        lastFeedback = null;
+        lastFeedbackDetails = null;
+      }
+      mainWindow?.webContents.send("analysis:result", { ...response, sent: currentService.lastSent });
+      return response;
+    }
+
+    logger.error('main', 'AI analysis failed', undefined, {
+      code: response.error?.code,
+      message: response.error?.message,
+      retryable: response.error?.retryable,
+      feedback,
+    });
+    const code = response.error?.details?.reason === 'privacy' ? 'PRIVACY_BLOCKED' : (response.error?.code || 'UNKNOWN_ERROR');
+    mainWindow?.webContents.send("analysis:error", {
+      code,
+      message: getErrorMessage(response.error?.message) || 'Analysis failed',
+      // A cancelled request can always be run again.
+      retryable: code === 'CANCELLED' ? true : (response.error?.retryable ?? false),
+      metadata: response.metadata,
+      // Null when the request never left the machine (no key, privacy block).
+      sent: currentService.lastSent,
+    });
+    return response;
+  } catch (err) {
+    if (!isCurrent()) return null;
+    analysisController = null;
+    isProcessing = false;
+    logger.error('main', 'Analysis error', err instanceof Error ? err : undefined, { feedback });
+    const errorResponse = mapProviderError(err, 'unknown');
+    mainWindow?.webContents.send("analysis:error", {
+      code: errorResponse.error?.code || 'UNKNOWN_ERROR',
+      message: getErrorMessage(errorResponse.error?.message) || 'Analysis failed',
+      retryable: errorResponse.error?.retryable ?? true,
+    });
+    return errorResponse;
+  } finally {
+    if (analysisController === controller) {
+      analysisController = null;
+      isProcessing = false;
+    }
+  }
+}
+
+/** MCP bridge: agents share the busy flag, UI and Cancel button with normal captures (approval lives in ./mcp). */
+const agentBridge: AgentBridge = {
+  getMainWindow: () => mainWindow,
+  async captureForAgent() {
+    if (isProcessing) throw new McpToolError(AGENT_BUSY_MESSAGE);
+    isProcessing = true;
+    try { return await captureScreenSelection(); } finally { isProcessing = false; }
+  },
+  async analyzeForAgent(image, signal) {
+    if (isProcessing) throw new McpToolError(AGENT_BUSY_MESSAGE);
+    [lastImage, lastFeedback, lastFeedbackDetails] = [image, null, null];
+    mainWindow?.webContents.send("analysis:screenshot", { dataUrl: nativeImage.createFromBuffer(image).toDataURL() });
+    return runAnalysis(image, null, signal);
+  },
+};
+
 async function runCapture() {
   if (isProcessing) {
     logger.debug('main', 'Analysis already in progress, skipping');
@@ -137,6 +259,8 @@ async function runCapture() {
       image = await captureScreenSelection();
     } catch (captureError) {
       isProcessing = false;
+      // A failed capture supersedes the previous image: Retry should capture again.
+      lastImage = null;
       logger.error('main', 'Capture failed', captureError instanceof Error ? captureError : undefined);
       
       // Provide helpful error messages for common Windows issues
@@ -179,54 +303,10 @@ async function runCapture() {
     mainWindow?.webContents.send("analysis:screenshot", { dataUrl: screenshotDataUrl });
 
     // Step 2: Analyze with AI (reload service to get latest provider from settings)
-    isProcessing = true;
     lastFeedback = null; // Reset feedback on new capture
+    lastFeedbackDetails = null;
     logger.info('main', 'Starting AI analysis');
-    mainWindow?.webContents.send("analysis:processing", { stage: "analyzing" });
-    
-    // Get fresh service instance to pick up any settings changes
-    const settings = loadSettingsFromFile();
-    const currentService = getAnalysisService({
-      provider: settings.provider || 'openai',
-      model: settings.model,
-      workspaceContextEnabled: settings.workspaceContextEnabled === true,
-      workspaceRoot: settings.workspaceRoot,
-    });
-    const workspaceRoot = getWorkspaceRoot();
-    const response = await currentService.analyzeScreenshot(image, undefined, workspaceRoot);
-    
-    isProcessing = false;
-
-    // Log AI response
-    if (response.success) {
-      logger.logAIResponse(
-        response.metadata.provider,
-        true,
-        response.metadata.latencyMs,
-        {
-          prompt: response.metadata.promptTokens,
-          completion: response.metadata.completionTokens,
-        }
-      );
-    } else {
-      logger.error('main', 'AI analysis failed', undefined, {
-        code: response.error?.code,
-        message: response.error?.message,
-        retryable: response.error?.retryable,
-      });
-    }
-
-    // Step 3: Send result or error
-    if (response.success && response.data) {
-      mainWindow?.webContents.send("analysis:result", response);
-    } else {
-      mainWindow?.webContents.send("analysis:error", {
-        code: response.error?.code || 'UNKNOWN_ERROR',
-        message: getErrorMessage(response.error?.message) || 'Analysis failed',
-        retryable: response.error?.retryable ?? false,
-        metadata: response.metadata,
-      });
-    }
+    await runAnalysis(image, null);
   } catch (err) {
     isProcessing = false;
     logger.error('main', 'Unexpected error in capture flow', err instanceof Error ? err : undefined);
@@ -275,10 +355,13 @@ app.whenReady().then(async () => {
       });
     });
   });
+
+  await initAgentServer(agentBridge);
 });
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  void stopAgentServer();
 });
 
 ipcMain.on("capture:start", async (event, ...args) => {
@@ -302,95 +385,75 @@ ipcMain.on("capture:start", async (event, ...args) => {
 
 ipcMain.on("analysis:retry", async (event, ...args) => {
   if (!mainWindow || !isTrustedIpcSender(event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('analysis:retry', args)) return;
-  if (!lastImage || isProcessing) {
-    logger.debug('main', 'Retry skipped', { hasImage: !!lastImage, isProcessing });
+  if (isProcessing) {
+    logger.debug('main', 'Retry skipped, already processing', { hasImage: !!lastImage });
     return;
   }
 
-  try {
-    isProcessing = true;
-    
-    // Log retry attempt with feedback context
-    const feedbackContext = lastFeedback 
-      ? `with ${lastFeedback} feedback` 
-      : 'without feedback';
-    logger.info('main', 'Retrying analysis', { 
-      feedback: lastFeedback,
-      feedbackContext,
-      hasImage: !!lastImage,
-      imageSize: lastImage?.length
-    });
-    
-    mainWindow?.webContents.send("analysis:processing", { stage: "analyzing" });
-    
-    // Get fresh service instance to pick up any settings changes
-    const settings = loadSettingsFromFile();
-    const currentService = getAnalysisService({
-      provider: settings.provider || 'openai',
-      model: settings.model,
-      workspaceContextEnabled: settings.workspaceContextEnabled === true,
-      workspaceRoot: settings.workspaceRoot,
-    });
-    const workspaceRoot = getWorkspaceRoot();
-    
-    // Pass feedback to analysis service for feedback-aware prompt generation
-    const response = await currentService.analyzeScreenshot(lastImage, lastFeedback, workspaceRoot);
-    
-    isProcessing = false;
-
-    if (response.success && response.data) {
-      logger.info('main', 'Retry successful', { 
-        feedback: lastFeedback,
-        confidence: response.data.confidence,
-        provider: response.metadata.provider
-      });
-      
-      // Reset feedback after successful retry (user can provide new feedback)
-      lastFeedback = null;
-      
-      mainWindow?.webContents.send("analysis:result", response);
-    } else {
-      logger.warn('main', 'Retry failed', {
-        feedback: lastFeedback,
-        code: response.error?.code,
-        retryable: response.error?.retryable,
-      });
+  if (!lastImage) {
+    // Nothing to re-analyze (e.g. the capture itself failed): start a new capture.
+    logger.info('main', 'Retry without a previous image, starting a new capture');
+    runCapture().catch((err) => {
+      isProcessing = false;
+      logger.error('main', 'Capture failed from retry', err instanceof Error ? err : undefined);
       mainWindow?.webContents.send("analysis:error", {
-        code: response.error?.code || 'UNKNOWN_ERROR',
-        message: getErrorMessage(response.error?.message) || 'Analysis failed',
-        retryable: response.error?.retryable ?? false,
-        metadata: response.metadata,
+        code: 'CAPTURE_ERROR',
+        message: err?.message ?? "Capture failed",
+        retryable: true,
       });
-    }
-  } catch (err) {
-    isProcessing = false;
-    logger.error('main', 'Retry error', err instanceof Error ? err : undefined, {
-      feedback: lastFeedback
     });
-    const errorResponse = mapProviderError(err, 'unknown');
-    mainWindow?.webContents.send("analysis:error", {
-      code: errorResponse.error?.code || 'UNKNOWN_ERROR',
-      message: getErrorMessage(errorResponse.error?.message) || 'Retry failed',
-      retryable: errorResponse.error?.retryable ?? true,
-    });
+    return;
   }
+
+  logger.info('main', 'Retrying analysis', {
+    feedback: lastFeedback,
+    feedbackReason: lastFeedbackDetails?.reason,
+    hasImage: true,
+    imageSize: lastImage.length,
+  });
+  await runAnalysis(lastImage, lastFeedback);
+});
+
+ipcMain.on("analysis:cancel", (event, ...args) => {
+  if (!mainWindow || !isTrustedIpcSender(event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('analysis:cancel', args)) return;
+  const controller = analysisController;
+  if (!controller) {
+    // Idle, or a capture/region selection is active: nothing to cancel.
+    logger.debug('main', 'Cancel ignored, no analysis in flight', { isProcessing });
+    return;
+  }
+  logger.info('main', 'Cancelling analysis');
+  analysisController = null;
+  isProcessing = false;
+  controller.abort();
+  mainWindow.webContents.send("analysis:error", {
+    code: 'CANCELLED',
+    message: 'Analysis cancelled.',
+    retryable: true,
+  });
 });
 
 // Feedback handler
-ipcMain.handle("feedback:submit", async (_event, payload: { positive: boolean }) => {
-  if (!mainWindow || !isTrustedIpcSender(_event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('feedback:submit', [payload])) throw new Error('Invalid or untrusted IPC request');
+ipcMain.handle("feedback:submit", async (_event, ...args: unknown[]) => {
+  if (!mainWindow || !isTrustedIpcSender(_event, rendererDirectory, undefined, mainWindow) || !validateDesktopIpcArgs('feedback:submit', args)) throw new Error('Invalid or untrusted IPC request');
+  const payload = args[0] as { positive: boolean; reason?: FeedbackReason; comment?: string };
   const feedback = payload.positive ? 'positive' : 'negative';
+  const comment = payload.comment?.trim() || undefined;
   lastFeedback = feedback;
-  
-  logger.info('main', 'Feedback received', { 
+  lastFeedbackDetails = payload.reason || comment ? { reason: payload.reason, comment } : null;
+
+  // Never log the comment text itself.
+  logger.info('main', 'Feedback received', {
     feedback,
+    reason: payload.reason,
+    hasComment: !!comment,
     hasImage: !!lastImage,
     canRetry: !!lastImage && !isProcessing
   });
-  
+
   // Log feedback for analytics
   logger.logAIRequest('feedback', 'user-feedback', 0);
-  
+
   return { success: true };
 });
 

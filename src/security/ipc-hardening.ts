@@ -70,11 +70,15 @@ function source(value: unknown, partial = false): boolean {
   });
 }
 
+/** Reasons accepted by feedback:submit (shared contract with the renderer). */
+export const FEEDBACK_REASONS = ['too-verbose', 'incorrect', 'missing-context', 'wrong-format', 'other'] as const;
+export const FEEDBACK_COMMENT_MAX_LENGTH = 500;
+
 /** Runtime validation for the actual desktop bridge, separate from legacy channels. */
 export function validateDesktopIpcArgs(channel: string, args: unknown[]): boolean {
   const provider = (value: unknown) => value === 'openai' || value === 'anthropic';
   const repoProvider = (value: unknown) => value === 'github' || value === 'gitlab';
-  const noArgs = ['capture:start', 'analysis:retry', 'settings:getPromptStatus', 'settings:getPromptText', 'settings:clearPrompt', 'settings:getWorkspaceContext', 'settings:getContextOptions', 'settings:openLogsFolder', 'settings:resetAllSettings', 'settings:listContextSources', 'settings:pickWorkspaceFolder'];
+  const noArgs = ['capture:start', 'analysis:retry', 'analysis:cancel', 'settings:getPromptStatus', 'settings:getPromptText', 'settings:clearPrompt', 'settings:getWorkspaceContext', 'settings:getContextOptions', 'settings:openLogsFolder', 'settings:resetAllSettings', 'settings:listContextSources', 'settings:pickWorkspaceFolder', 'settings:getMcpStatus', 'settings:copyMcpSetupCommand', 'settings:resetMcpToken'];
   if (noArgs.includes(channel)) return args.length === 0;
   if (['settings:getApiKeyStatus', 'settings:deleteApiKey', 'settings:getApiKeyTestStatus'].includes(channel)) return args.length === 1 && provider(args[0]);
   if (['settings:storeApiKey', 'settings:validateApiKey', 'settings:testApiKey'].includes(channel)) return args.length === 2 && provider(args[0]) && text(args[1], 8192);
@@ -84,14 +88,14 @@ export function validateDesktopIpcArgs(channel: string, args: unknown[]): boolea
     if (args.length !== 2) return false;
     if (key === 'provider') return provider(value);
     if (key === 'model') return text(value, 200) && value.length > 0;
-    if (['promptEnabled', 'workspaceContextEnabled'].includes(String(key))) return typeof value === 'boolean';
+    if (['promptEnabled', 'workspaceContextEnabled', 'singleKeyShortcuts'].includes(String(key))) return typeof value === 'boolean';
     if (key === 'workspaceRoot') return text(value);
     if (key === 'maxTokens') return Number.isInteger(value) && Number(value) > 0 && Number(value) <= 32768;
     if (key === 'temperature') return typeof value === 'number' && value >= 0 && value <= 2;
     return key === 'timeout' && Number.isInteger(value) && Number(value) > 0 && Number(value) <= 300000;
   }
   if (channel === 'settings:importPrompt') return args.length === 1 && text(args[0], 1000000);
-  if (channel === 'settings:setPromptEnabled') return args.length === 1 && typeof args[0] === 'boolean';
+  if (['settings:setPromptEnabled', 'settings:setMcpEnabled'].includes(channel)) return args.length === 1 && typeof args[0] === 'boolean';
   if (channel === 'settings:setWorkspaceContext') return args.length <= 2 && typeof args[0] === 'boolean' && optionalText(args[1]);
   if (channel === 'settings:setContextOptions') return args.length === 1 && contextOptions(args[0]);
   if (channel === 'settings:getContextPreview') return args.length <= 1 && optionalText(args[0]);
@@ -103,7 +107,13 @@ export function validateDesktopIpcArgs(channel: string, args: unknown[]): boolea
   if (channel === 'settings:addContextSource') return args.length === 1 && source(args[0]);
   if (channel === 'settings:updateContextSource') return args.length === 2 && text(args[0]) && source(args[1], true);
   if (channel === 'settings:removeContextSource') return args.length === 1 && text(args[0]);
-  if (channel === 'feedback:submit') return args.length === 1 && record(args[0]) && typeof args[0].positive === 'boolean' && Object.keys(args[0]).length === 1;
+  if (channel === 'feedback:submit') {
+    const value = args[0];
+    if (args.length !== 1 || !record(value) || typeof value.positive !== 'boolean') return false;
+    if (!Object.keys(value).every(key => ['positive', 'reason', 'comment'].includes(key))) return false;
+    if (value.reason !== undefined && !(FEEDBACK_REASONS as readonly unknown[]).includes(value.reason)) return false;
+    return value.comment === undefined || text(value.comment, FEEDBACK_COMMENT_MAX_LENGTH);
+  }
   if (channel === 'file:saveText') {
     const value = args[0];
     if (args.length !== 1 || !record(value) || !text(value.content, 10000000)) return false;

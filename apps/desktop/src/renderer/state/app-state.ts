@@ -22,9 +22,9 @@ export interface AppState {
   
   // UI state
   uiState: {
-    activeTab: 'issues' | 'summary' | 'notes' | 'raw' | 'logs';
+    activeTab: 'summary' | 'issues' | 'notes' | 'raw';
     filterSeverity: 'all' | 'high' | 'medium' | 'low';
-    sortMode: 'severity' | 'slide' | 'type';
+    sortMode: 'severity' | 'type';
     expandedIssues: Set<number>;
     selectedIssueId: number | null;
     allExpanded: boolean;
@@ -60,7 +60,7 @@ export const initialState: AppState = {
     rawPayload: null,
   },
   uiState: {
-    activeTab: 'issues',
+    activeTab: 'summary',
     filterSeverity: 'all',
     sortMode: 'severity',
     expandedIssues: new Set(),

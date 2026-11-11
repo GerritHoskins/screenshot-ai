@@ -10,6 +10,43 @@ import type { AIResponse, ScreenshotAnalysis } from "@shared-types/ai-response";
 // Type-safe API Interface
 // ============================================================================
 
+export type FeedbackReason = 'too-verbose' | 'incorrect' | 'missing-context' | 'wrong-format' | 'other';
+
+export interface FeedbackDetails {
+  reason?: FeedbackReason;
+  /** Free text, at most 500 characters. Never logged by the main process. */
+  comment?: string;
+}
+
+export interface AnalysisProcessingPayload {
+  stage: 'capture' | 'analyzing' | 'cancelled';
+  /** Present on 'analyzing'. */
+  provider?: 'openai' | 'anthropic';
+  /** Effective model (the provider default when none is set). Present on 'analyzing'. */
+  model?: string;
+}
+
+export interface AnalysisErrorPayload {
+  /** Core AIErrorCode (incl. AUTH_ERROR, CANCELLED), CAPTURE_ERROR, or PRIVACY_BLOCKED (nothing was sent). */
+  code: string;
+  message: string;
+  retryable: boolean;
+  metadata?: unknown;
+  /** What was sent besides the image; null when nothing was sent. */
+  sent?: { contextFiles: number; customPrompt: boolean } | null;
+}
+
+/** Agent access (MCP server mode) status, mirrored from apps/desktop/src/main/mcp.ts. */
+export interface McpStatus {
+  enabled: boolean;
+  forcedByEnv: boolean;
+  running: boolean;
+  url: string | null;
+  port: number;
+  connectionFile: string;
+  error: string | null;
+}
+
 export interface ExposedAPI {
   capture: {
     start: () => void;
@@ -22,12 +59,18 @@ export interface ExposedAPI {
     }) => Promise<{ success: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
   };
   analysis: {
-    onProcessing: (callback: (payload: { stage: string; screenshotDataUrl?: string }) => void) => void;
+    onProcessing: (callback: (payload: AnalysisProcessingPayload) => void) => void;
     onScreenshot: (callback: (payload: { dataUrl: string }) => void) => void;
     onResult: (callback: (response: AIResponse<ScreenshotAnalysis>) => void) => void;
-    onError: (callback: (payload: { code: string; message: string; retryable: boolean; metadata?: unknown }) => void) => void;
+    onError: (callback: (payload: AnalysisErrorPayload) => void) => void;
     retry: () => void;
+    /** Abort the in-flight analysis. No-op while idle or during region selection. */
+    cancel: () => void;
+    /** @deprecated Use feedback.submit. Kept for the positive-only call shape. */
     submitFeedback: (positive: boolean) => Promise<void>;
+  };
+  feedback: {
+    submit: (positive: boolean, details?: FeedbackDetails) => Promise<void>;
   };
   settings: {
     getApiKeyStatus: (provider: 'openai' | 'anthropic') => Promise<{ hasKey: boolean; masked: string | null }>;
@@ -76,6 +119,11 @@ export interface ExposedAPI {
     getApiKeyTestStatus: (provider: 'openai' | 'anthropic') => Promise<{ lastTested: number | null; lastTestStatus: string | null; lastTestLatency: number | null; lastTestError: string | null }>;
     openLogsFolder: () => Promise<{ success: boolean; error?: string }>;
     resetAllSettings: () => Promise<{ success: boolean; error?: string }>;
+    // Agent access (MCP server mode)
+    getMcpStatus: () => Promise<McpStatus>;
+    setMcpEnabled: (enabled: boolean) => Promise<McpStatus>;
+    copyMcpSetupCommand: () => Promise<{ success: boolean; error?: string }>;
+    resetMcpToken: () => Promise<McpStatus>;
     // Repository authentication
     connectRepoProvider: (provider: 'github' | 'gitlab', token: string, username?: string) => Promise<{ 
       success: boolean; 
@@ -126,6 +174,14 @@ export interface ExposedAPI {
 // Expose Secure API
 // ============================================================================
 
+/** Build the feedback:submit payload with only the known keys, so callers cannot smuggle extra fields. */
+function submitFeedback(positive: boolean, details?: FeedbackDetails): Promise<void> {
+  const payload: { positive: boolean; reason?: FeedbackReason; comment?: string } = { positive };
+  if (details?.reason !== undefined) payload.reason = details.reason;
+  if (details?.comment !== undefined) payload.comment = details.comment;
+  return ipcRenderer.invoke("feedback:submit", payload) as Promise<void>;
+}
+
 const api: ExposedAPI = {
   capture: {
     start: () => {
@@ -151,9 +207,13 @@ const api: ExposedAPI = {
     retry: () => {
       ipcRenderer.send("analysis:retry");
     },
-    submitFeedback: (positive) => {
-      return ipcRenderer.invoke("feedback:submit", { positive }) as Promise<void>;
+    cancel: () => {
+      ipcRenderer.send("analysis:cancel");
     },
+    submitFeedback: (positive) => submitFeedback(positive),
+  },
+  feedback: {
+    submit: (positive, details) => submitFeedback(positive, details),
   },
   settings: {
     getApiKeyStatus: (provider) => ipcRenderer.invoke("settings:getApiKeyStatus", provider),
@@ -177,6 +237,10 @@ const api: ExposedAPI = {
     getApiKeyTestStatus: (provider) => ipcRenderer.invoke("settings:getApiKeyTestStatus", provider),
     openLogsFolder: () => ipcRenderer.invoke("settings:openLogsFolder"),
     resetAllSettings: () => ipcRenderer.invoke("settings:resetAllSettings"),
+    getMcpStatus: () => ipcRenderer.invoke("settings:getMcpStatus"),
+    setMcpEnabled: (enabled) => ipcRenderer.invoke("settings:setMcpEnabled", enabled),
+    copyMcpSetupCommand: () => ipcRenderer.invoke("settings:copyMcpSetupCommand"),
+    resetMcpToken: () => ipcRenderer.invoke("settings:resetMcpToken"),
     connectRepoProvider: (provider, token, username) => ipcRenderer.invoke("settings:connectRepoProvider", provider, token, username),
     testRepoToken: (provider, token) => ipcRenderer.invoke("settings:testRepoToken", provider, token),
     getRepoAuthStatus: (provider, username) => ipcRenderer.invoke("settings:getRepoAuthStatus", provider, username),
